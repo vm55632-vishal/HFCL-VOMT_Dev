@@ -12,3 +12,5 @@ export * from './risk';
 export * from './filetype';
 export * from './name-match';
 export * from './red-flags';
+export * from './money';
+export * from './kyc';

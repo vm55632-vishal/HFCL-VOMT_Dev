@@ -28,7 +28,7 @@ export default function SignIn() {
           body: JSON.stringify({ email, password }),
         });
       }
-      router.push('/console');
+      router.push('/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign-in failed.');
     } finally {

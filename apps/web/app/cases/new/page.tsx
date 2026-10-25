@@ -2,10 +2,19 @@
 import Link from 'next/link';
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { apiFetch, ApiError } from '../../../lib/api';
-import { validatePan, validateGstin, validateIfsc } from '@vop/shared';
+import {
+  validatePan,
+  validateGstin,
+  validateIfsc,
+  rcLimitsFromVehicles,
+  RC_LIMIT_PER_VEHICLE,
+} from '@vop/shared';
 import { lookupIfsc } from '../../../lib/ifsc';
+import { TeamStructureEditor, type TeamInfo } from '../../../components/TeamStructureEditor';
+import { explainValidation } from '../../../lib/validation-errors';
+import { Icon } from '../../../components/icons';
 
 interface SubCategory {
   key: string;
@@ -119,7 +128,64 @@ interface MsmeResult {
   details?: MsmeDetails;
 }
 
+interface PartnerRow {
+  name: string;
+  dob: string;
+  maritalStatus: string;
+  gender: string;
+  fatherName: string;
+  spouseName: string;
+  pan: string;
+  address: string;
+  mobile: string;
+  pincode: string;
+}
+const EMPTY_PARTNER: PartnerRow = {
+  name: '',
+  dob: '',
+  maritalStatus: '',
+  gender: '',
+  fatherName: '',
+  spouseName: '',
+  pan: '',
+  address: '',
+  mobile: '',
+  pincode: '',
+};
+
+interface RefRow {
+  contactName: string;
+  businessName: string;
+  registeredAddress: string;
+  contactNumber: string;
+  email: string;
+}
+const EMPTY_REF: RefRow = {
+  contactName: '',
+  businessName: '',
+  registeredAddress: '',
+  contactNumber: '',
+  email: '',
+};
+const MIN_REFERENCES = 2;
+interface RcRow {
+  financerName: string;
+  rcLimit: string;
+  numberOfVehicles: string;
+  remarks: string;
+}
+const EMPTY_RC: RcRow = { financerName: '', rcLimit: '', numberOfVehicles: '', remarks: '' };
+
+// Always show at least the minimum number of reference rows.
+const padRefs = (rows: RefRow[]): RefRow[] =>
+  rows.length >= MIN_REFERENCES
+    ? rows
+    : [...rows, ...Array.from({ length: MIN_REFERENCES - rows.length }, () => ({ ...EMPTY_REF }))];
+
 const initial = {
+  references: padRefs([]),
+  rcLimits: [] as RcRow[],
+  partners: [] as PartnerRow[],
   categoryKey: '',
   subCategoryKey: '',
   legalName: '',
@@ -164,6 +230,15 @@ const initial = {
   isecAccessPii: '',
 };
 
+// The form is split into steps so no page is a long scroll. Add a step here (and a matching
+// `<div hidden={step !== n}>` panel) when more questions are introduced.
+const STEPS = [
+  { title: 'Vendor & tax' },
+  { title: 'Questionnaire' },
+  { title: 'Management & references' },
+  { title: 'Team structure' },
+];
+
 // InfoSec questionnaire — any "yes" routes the case to InfoSec review.
 const INFOSEC_QUESTIONS: { key: string; label: string }[] = [
   { key: 'isecItHardware', label: 'Information Technology — Hardware' },
@@ -198,8 +273,27 @@ function NewCaseInner() {
   // Edit mode (proposer amending a sent-back draft): the PAN was verified earlier, so the form is
   // unlocked without re-verifying, and masked identifiers are left untouched unless re-entered.
   const [panLocked, setPanLocked] = useState(false);
-  const [remark, setRemark] = useState<string | null>(null);
+  // Why the case was sent back: one entry per team whose review is waiting on the proposer.
+  const [remarks, setRemarks] = useState<{ team: string; note: string; by?: string }[]>([]);
   const editLoaded = useRef(false);
+
+  // --- Draft autosave: the form is saved to the server as a draft case, so it shows up in the case
+  // list and can be reopened from there with every detail intact. ---
+  // new = blank form · draft = continuing a saved draft · resubmit = amending a sent-back case.
+  const [kind, setKind] = useState<'loading' | 'new' | 'draft' | 'resubmit'>(
+    editId ? 'loading' : 'new',
+  );
+  const [draftId, setDraftId] = useState<string | null>(null);
+  const [draftSavedAt, setDraftSavedAt] = useState<Date | null>(null);
+  const [draftSaving, setDraftSaving] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const draftIdRef = useRef<string | null>(null);
+  const savingRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const submittedRef = useRef(false);
+  // A reopened draft keeps its GSTIN: choosing a PAN normally clears the GST selection.
+  const pendingGstinRef = useRef<string | null>(null);
+  const router = useRouter();
 
   const load = useCallback(async () => {
     try {
@@ -218,15 +312,55 @@ function NewCaseInner() {
   useEffect(() => {
     if (!editId || editLoaded.current) return;
     editLoaded.current = true;
-    const bs = (b: boolean) => (b ? 'yes' : 'no');
     void apiFetch<Record<string, unknown>>(`/cases/${editId}`)
       .then((c) => {
         const str = (v: unknown) => (v == null ? '' : String(v));
+        const isDraft = c.stage === 'draft';
+        // A draft cannot tell "answered No" from "not answered yet", so false stays blank there.
+        const bs = (b: boolean) => (b ? 'yes' : isDraft ? '' : 'no');
+        const changed = Array.isArray(c.teamOverriddenFields)
+          ? (c.teamOverriddenFields as string[])
+          : [];
+        const savedTeam = (c.teamStructure ?? {}) as Record<string, string>;
+        setTeamOv(Object.fromEntries(changed.map((k) => [k, savedTeam[k] ?? ''])));
         setF((prev) => ({
           ...prev,
           categoryKey: str(c.categoryKey),
           subCategoryKey: str(c.subCategoryKey),
           legalName: str(c.legalName),
+          partners: Array.isArray(c.partners)
+            ? (c.partners as Record<string, unknown>[]).map((p) => ({
+                name: str(p.name),
+                dob: str(p.dob),
+                maritalStatus: str(p.maritalStatus),
+                gender: str(p.gender),
+                fatherName: str(p.fatherName),
+                spouseName: str(p.spouseName),
+                pan: str(p.pan),
+                address: str(p.address),
+                mobile: str(p.mobile),
+                pincode: str(p.pincode),
+              }))
+            : [],
+          references: padRefs(
+            Array.isArray(c.references)
+              ? (c.references as Record<string, unknown>[]).map((r) => ({
+                  contactName: str(r.contactName),
+                  businessName: str(r.businessName),
+                  registeredAddress: str(r.registeredAddress),
+                  contactNumber: str(r.contactNumber),
+                  email: str(r.email),
+                }))
+              : [],
+          ),
+          rcLimits: Array.isArray(c.rcLimits)
+            ? (c.rcLimits as Record<string, unknown>[]).map((r) => ({
+                financerName: str(r.financerName),
+                rcLimit: str(r.rcLimit),
+                numberOfVehicles: str(r.numberOfVehicles),
+                remarks: str(r.remarks),
+              }))
+            : [],
           tradeName: str(c.tradeName),
           businessAddress: str(c.businessAddress),
           contactName: str(c.contactName),
@@ -257,14 +391,45 @@ function NewCaseInner() {
           isecAccessApps: bs(Boolean(c.isecAccessApps)),
           isecAccessPii: bs(Boolean(c.isecAccessPii)),
         }));
+        if (isDraft) {
+          setKind('draft');
+          draftIdRef.current = editId;
+          setDraftId(editId);
+          pendingGstinRef.current = str(c.gstin);
+          return;
+        }
+        setKind('resubmit');
         setPanLocked(true);
+        // Each team that sent the case back leaves its remark on its own stage record.
+        const TEAMS: [string, string][] = [
+          ['infosec', 'InfoSec'],
+          ['fcu', 'FCU'],
+          ['operation', 'Operation'],
+          ['legal', 'Legal'],
+        ];
+        const stages = (c.stages ?? {}) as Record<
+          string,
+          { status?: string; remark?: string | null; actionedByName?: string | null } | null
+        >;
+        const found = TEAMS.flatMap(([key, team]) => {
+          const st = stages[key];
+          return st?.status === 'sent_back' && st.remark
+            ? [{ team, note: st.remark, by: st.actionedByName ?? undefined }]
+            : [];
+        });
+        // Cases sent back before per-team remarks existed: fall back to the activity log.
         const activity = (c.activity as { action: string; note: string | null }[]) ?? [];
-        const ret = [...activity]
+        const legacy = [...activity]
           .reverse()
           .find((a) => a.action === 'return' || a.action === 'infosec_returned');
-        if (ret?.note) setRemark(ret.note);
+        setRemarks(
+          found.length > 0 ? found : legacy?.note ? [{ team: 'Reviewer', note: legacy.note }] : [],
+        );
       })
-      .catch((err) => setError(err instanceof ApiError ? err.message : 'Failed to load the case.'));
+      .catch((err) => {
+        setKind('new');
+        setError(err instanceof ApiError ? err.message : 'Failed to load the case.');
+      });
   }, [editId]);
 
   const set = (k: keyof typeof initial, v: string | boolean) =>
@@ -283,7 +448,12 @@ function NewCaseInner() {
   // --- statutory validation (shared validators; same rules run again server-side) ---
   const panErr =
     f.pan && !masked(f.pan) && !validatePan(f.pan).valid ? validatePan(f.pan).errors[0] : null;
-  const gstRes = f.gstin && !masked(f.gstin) ? validateGstin(f.gstin, f.pan || undefined) : null;
+  // In edit mode the PAN is masked (••••) for proposers — comparing against it would raise a
+  // false "GSTIN does not belong to the vendor PAN" error, so only cross-check a real PAN.
+  const gstRes =
+    f.gstin && !masked(f.gstin)
+      ? validateGstin(f.gstin, f.pan && !masked(f.pan) ? f.pan : undefined)
+      : null;
   const gstErr = gstRes && !gstRes.valid ? gstRes.errors[0] : null;
   const ifscErr = f.ifsc && !validateIfsc(f.ifsc).valid ? validateIfsc(f.ifsc).errors[0] : null;
   // --- authorized signatory validation ---
@@ -523,7 +693,8 @@ function NewCaseInner() {
     setPanChk({ loading: true, result: null });
     // New PAN -> reset any previous GST selection; the list is re-fetched for this PAN.
     setGstOther(false);
-    setF((prev) => ({ ...prev, gstin: '' }));
+    setF((prev) => ({ ...prev, gstin: pendingGstinRef.current ?? '' }));
+    pendingGstinRef.current = null;
     const timer = setTimeout(() => {
       void apiFetch<PanResult>('/verification/pan', {
         method: 'POST',
@@ -549,6 +720,243 @@ function NewCaseInner() {
     };
   }, [f.pan]);
 
+  // Changes the proposer made to their team structure for this case (field -> value).
+  const [teamOv, setTeamOv] = useState<Record<string, string>>({});
+  const teamOvRef = useRef(teamOv);
+  teamOvRef.current = teamOv;
+
+  // Team structure comes from a master table, looked up for the signed-in proposer.
+  const [teamInfo, setTeamInfo] = useState<TeamInfo | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch<TeamInfo>('/team-structure/me')
+      .then((r) => {
+        if (!cancelled) setTeamInfo(r);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const fRef = useRef(f);
+  fRef.current = f;
+
+  const draftBody = useCallback(() => {
+    const cur = fRef.current as unknown as Record<string, unknown>;
+    const body: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(cur)) {
+      if (k === 'partners' || k.startsWith('isec')) continue;
+      if (k === 'spend' || k === 'contractMonths') {
+        if (v) body[k] = Number(v);
+        continue;
+      }
+      // A masked value (••••) is display-only; leaving it out keeps the stored value untouched.
+      if (typeof v === 'string' && v.includes('•')) continue;
+      body[k] = v;
+    }
+    for (const q of INFOSEC_QUESTIONS) body[q.key] = cur[q.key] === 'yes';
+    body.partners = cur.partners;
+    body.references = cur.references;
+    body.teamOverrides = teamOvRef.current;
+    body.rcLimits = (cur.rcLimits as RcRow[]).map((r) => ({
+      financerName: r.financerName,
+      rcLimit: r.rcLimit === '' ? null : Number(r.rcLimit),
+      numberOfVehicles: r.numberOfVehicles === '' ? null : Number(r.numberOfVehicles),
+      remarks: r.remarks,
+    }));
+    return body;
+  }, []);
+
+  // Single-flight save: edits made while a save is running are sent right after it, in order.
+  const flushDraft = useCallback(async (): Promise<boolean> => {
+    if (submittedRef.current || !fRef.current.categoryKey) return false;
+    if (savingRef.current) {
+      dirtyRef.current = true;
+      return true;
+    }
+    savingRef.current = true;
+    setDraftSaving(true);
+    try {
+      do {
+        dirtyRef.current = false;
+        const body = JSON.stringify(draftBody());
+        if (!draftIdRef.current) {
+          const r = await apiFetch<{ id: string }>('/cases/drafts', { method: 'POST', body });
+          draftIdRef.current = r.id;
+          setDraftId(r.id);
+        } else {
+          await apiFetch(`/cases/${draftIdRef.current}/draft`, { method: 'PUT', body });
+        }
+        setDraftSavedAt(new Date());
+        setDraftError(null);
+      } while (dirtyRef.current && !submittedRef.current);
+      return true;
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : 'Could not save the draft.');
+      return false;
+    } finally {
+      savingRef.current = false;
+      setDraftSaving(false);
+    }
+  }, [draftBody]);
+
+  // Autosave about a second after the proposer stops typing, once there is something to keep.
+  useEffect(() => {
+    if (kind === 'loading' || kind === 'resubmit' || result || submittedRef.current) return;
+    if (!f.categoryKey) return;
+    const initialMap = initial as Record<string, unknown>;
+    const hasContent = Object.entries(f).some(([k, v]) =>
+      k === 'categoryKey'
+        ? false
+        : Array.isArray(v)
+          ? v.some((row) =>
+              Object.values(row as unknown as Record<string, string>).some((x) => String(x).trim()),
+            )
+          : v !== initialMap[k],
+    );
+    if (!hasContent && !draftIdRef.current) return;
+    const t = setTimeout(() => void flushDraft(), 1000);
+    return () => clearTimeout(t);
+  }, [kind, f, spocSame, teamOv, result, flushDraft]);
+
+  async function discardDraft() {
+    const id = draftIdRef.current;
+    if (!id) {
+      router.push('/cases');
+      return;
+    }
+    if (!window.confirm('Discard this draft? It will be removed from your cases.')) return;
+    submittedRef.current = true; // stop autosave from recreating it
+    try {
+      await apiFetch(`/cases/${id}/draft`, { method: 'DELETE' });
+      router.push('/cases');
+    } catch (err) {
+      submittedRef.current = false;
+      setError(err instanceof Error ? err.message : 'Could not discard the draft.');
+    }
+  }
+
+  // --- Management structure (partners) ---
+  function addPartner() {
+    setF((prev) => ({ ...prev, partners: [...prev.partners, { ...EMPTY_PARTNER }] }));
+  }
+  function removePartner(i: number) {
+    setF((prev) => ({ ...prev, partners: prev.partners.filter((_, j) => j !== i) }));
+  }
+  function setPartner(i: number, patch: Partial<PartnerRow>) {
+    setF((prev) => ({
+      ...prev,
+      partners: prev.partners.map((p, j) => (j === i ? { ...p, ...patch } : p)),
+    }));
+  }
+
+  // --- References (at least two) ---
+  function addReference() {
+    setF((prev) => ({ ...prev, references: [...prev.references, { ...EMPTY_REF }] }));
+  }
+  function removeReference(i: number) {
+    setF((prev) =>
+      prev.references.length <= MIN_REFERENCES
+        ? prev
+        : { ...prev, references: prev.references.filter((_, j) => j !== i) },
+    );
+  }
+  function setReference(i: number, patch: Partial<RefRow>) {
+    setF((prev) => ({
+      ...prev,
+      references: prev.references.map((r, j) => (j === i ? { ...r, ...patch } : r)),
+    }));
+  }
+
+  // --- RC limits (optional) ---
+  function addRcLimit() {
+    setF((prev) => ({ ...prev, rcLimits: [...prev.rcLimits, { ...EMPTY_RC }] }));
+  }
+  function removeRcLimit(i: number) {
+    setF((prev) => ({ ...prev, rcLimits: prev.rcLimits.filter((_, j) => j !== i) }));
+  }
+  function setRcLimit(i: number, patch: Partial<RcRow>) {
+    setF((prev) => ({
+      ...prev,
+      rcLimits: prev.rcLimits.map((r, j) => (j === i ? { ...r, ...patch } : r)),
+    }));
+  }
+
+  // --- Multi-step form ---
+  const [step, setStep] = useState(0);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  // Problems that must be fixed before leaving a step (beyond the browser's own required checks).
+  function stepProblem(n: number): string | null {
+    if (n === 0) {
+      if (!panVerified) return "Enter and verify the vendor's PAN before continuing.";
+      if (panErr || gstErr || ifscErr) {
+        return 'Fix the highlighted PAN / GST / IFSC fields before continuing.';
+      }
+    }
+    if (n === 1) {
+      if (sigPanErr || sigMobileErr || sigEmailErr) {
+        return 'Fix the highlighted signatory fields before continuing.';
+      }
+      if (!isecAnswered) return 'Answer all Information security questions before continuing.';
+    }
+    return null;
+  }
+
+  // Moving forward validates the step being left, so errors surface where the field is.
+  function goTo(target: number) {
+    if (target > step) {
+      const problem = stepProblem(step);
+      if (problem) {
+        setError(problem);
+        return;
+      }
+      const sel = `[data-step="${step}"]`;
+      const fields = formRef.current?.querySelectorAll<
+        HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+      >(`${sel} input, ${sel} select, ${sel} textarea`);
+      const bad = Array.from(fields ?? []).find((el) => !el.checkValidity());
+      if (bad) {
+        bad.reportValidity();
+        return;
+      }
+    }
+    setError(null);
+    setStep(target);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  const draftControls = kind !== 'resubmit' && (
+    <>
+      <button
+        className="btn btn--ghost"
+        type="button"
+        disabled={busy || draftSaving}
+        onClick={() => void flushDraft()}
+      >
+        {draftSaving ? 'Saving…' : 'Save draft'}
+      </button>
+      {draftId && (
+        <button
+          className="btn btn--ghost"
+          type="button"
+          disabled={busy}
+          onClick={() => void discardDraft()}
+        >
+          Discard draft
+        </button>
+      )}
+      <span className={draftError ? 'error tiny' : 'muted tiny'} role="status" aria-live="polite">
+        {draftError
+          ? `Couldn't save the draft: ${draftError}`
+          : draftSavedAt
+            ? `Draft saved ${draftSavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · find it in Cases · autosaves as you type`
+            : 'Autosaves as you type and appears in your case list'}
+      </span>
+    </>
+  );
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (panErr || gstErr || ifscErr || sigPanErr || sigMobileErr || sigEmailErr) {
@@ -559,10 +967,42 @@ function NewCaseInner() {
       setError('Answer all Information security questions before submitting.');
       return;
     }
+    if (f.references.length < MIN_REFERENCES) {
+      setError('Add at least two references before submitting.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const payload: Record<string, unknown> = { ...f };
+      payload.partners = f.partners.map((p) => ({
+        name: p.name.trim(),
+        dob: p.dob,
+        maritalStatus: p.maritalStatus,
+        gender: p.gender,
+        fatherName: p.fatherName.trim(),
+        ...(p.maritalStatus === 'Married' && p.spouseName.trim()
+          ? { spouseName: p.spouseName.trim() }
+          : {}),
+        pan: p.pan.trim().toUpperCase(),
+        address: p.address.trim(),
+        mobile: p.mobile.trim(),
+        pincode: p.pincode.trim(),
+      }));
+      payload.teamOverrides = teamOv;
+      payload.references = f.references.map((r) => ({
+        contactName: r.contactName.trim(),
+        businessName: r.businessName.trim(),
+        registeredAddress: r.registeredAddress.trim(),
+        contactNumber: r.contactNumber.trim(),
+        email: r.email.trim(),
+      }));
+      payload.rcLimits = f.rcLimits.map((r) => ({
+        financerName: r.financerName.trim(),
+        rcLimit: Number(r.rcLimit),
+        numberOfVehicles: Number(r.numberOfVehicles),
+        ...(r.remarks.trim() ? { remarks: r.remarks.trim() } : {}),
+      }));
       payload.spend = f.spend ? Number(f.spend) : undefined;
       payload.contractMonths = f.contractMonths ? Number(f.contractMonths) : undefined;
       for (const k of [
@@ -588,11 +1028,22 @@ function NewCaseInner() {
         'subCategoryKey',
       ])
         if (!payload[k]) delete payload[k];
+      // Masked values (••••) are display-only. Sending them back would be rejected as an invalid
+      // PAN; leaving them out keeps the stored encrypted value untouched.
+      for (const k of ['pan', 'bankAccount', 'signatoryPan']) {
+        const v = payload[k];
+        if (typeof v === 'string' && v.includes('•')) delete payload[k];
+      }
       // Convert the InfoSec questionnaire answers to booleans the API expects.
       for (const q of INFOSEC_QUESTIONS)
         payload[q.key] = (f as unknown as Record<string, string>)[q.key] === 'yes';
-      const res = editId
-        ? await apiFetch<CreateResult>(`/cases/${editId}`, {
+      // Stop autosave and let any save in flight finish, so a stale save cannot land after submit.
+      submittedRef.current = true;
+      for (let i = 0; i < 100 && savingRef.current; i++)
+        await new Promise((r) => setTimeout(r, 50));
+      const target = editId || draftIdRef.current;
+      const res = target
+        ? await apiFetch<CreateResult>(`/cases/${target}`, {
             method: 'PATCH',
             body: JSON.stringify(payload),
           })
@@ -602,7 +1053,17 @@ function NewCaseInner() {
           });
       setResult({ ...res, duplicates: res.duplicates ?? [] });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Submit failed.');
+      submittedRef.current = false; // let autosave resume so edits are not lost
+      // Field errors from the server are shown as plain lines, on the page that holds the problem.
+      const friendly =
+        err instanceof ApiError && err.status === 400 ? explainValidation(err.message) : null;
+      if (friendly) {
+        setError(friendly.text);
+        setStep(friendly.step);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } else {
+        setError(err instanceof Error ? err.message : 'Submit failed.');
+      }
     } finally {
       setBusy(false);
     }
@@ -611,7 +1072,7 @@ function NewCaseInner() {
   if (result) {
     return (
       <main className="wrap narrow">
-        <h1>{editId ? 'Case updated & resubmitted' : 'Case raised'}</h1>
+        <h1>{kind === 'resubmit' ? 'Case updated & resubmitted' : 'Case raised'}</h1>
         <p className="lead">
           <strong>{result.ref}</strong> · risk tier <span className="pill">{result.tier}</span>
           {result.riskScore != null && <> (score {result.riskScore})</>}
@@ -645,597 +1106,1134 @@ function NewCaseInner() {
       <p className="crumbs">
         <Link href="/cases">Cases</Link>
       </p>
-      <h1>{editId ? 'Edit & resubmit case' : 'Raise a vendor onboarding case'}</h1>
+      <h1>
+        {kind === 'resubmit'
+          ? 'Edit & resubmit case'
+          : kind === 'draft'
+            ? 'Continue your draft'
+            : 'Raise a vendor onboarding case'}
+      </h1>
       <p className="lead">
-        {editId
+        {kind === 'resubmit'
           ? 'Amend the details below and resubmit. The case is re-tiered and re-routed on submit.'
-          : 'Enter the vendor details on their behalf. The risk tier is computed on submit.'}
+          : kind === 'draft'
+            ? 'Pick up where you left off. Your changes save automatically; raise the case when it is complete.'
+            : 'Enter the vendor details on their behalf. The risk tier is computed on submit.'}
       </p>
-      {remark && (
-        <div className="namematch namematch--warn" role="status">
-          <strong>Reviewer&apos;s remark:</strong> {remark}
+      {remarks.length > 0 && (
+        <div className="rv-alert rv-alert--warn" role="status">
+          <Icon name="undo" size={18} />
+          <div>
+            <strong>Sent back for changes</strong>
+            <ul className="rv-remarks">
+              {remarks.map((r) => (
+                <li key={r.team}>
+                  <strong>
+                    {r.team}
+                    {r.by ? ` (${r.by})` : ''}:
+                  </strong>{' '}
+                  {r.note}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
       {error && (
-        <p className="error" role="alert">
+        <p className="error" role="alert" style={{ whiteSpace: 'pre-line' }}>
           {error}
         </p>
       )}
 
-      <form onSubmit={submit}>
-        <section className="card">
-          <h2>Vendor</h2>
-          <div className="grid2">
-            <label>
-              Vendor category
-              <select value={f.categoryKey} onChange={(e) => setCategory(e.target.value)} required>
-                {cats.map((c) => (
-                  <option key={c.key} value={c.key}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Sub vendor category
-              <select
-                value={f.subCategoryKey}
-                onChange={(e) => set('subCategoryKey', e.target.value)}
-                disabled={subs.length === 0}
-              >
-                <option value="">
-                  {subs.length === 0 ? 'None for this category' : 'Select a sub-category…'}
-                </option>
-                {subs.map((s) => (
-                  <option key={s.key} value={s.key}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        </section>
+      <p className="step-label" aria-live="polite">
+        Step {step + 1} of {STEPS.length} · <strong>{STEPS[step].title}</strong>
+      </p>
 
-        <section className="card">
-          <h2>Tax identifiers</h2>
-          <p className="section-intro">
-            Enter the PAN — its registry details and any MSME / Udyam registration load
-            automatically. Then pick a GSTIN and fetch its details to add GST information.
-          </p>
-          <div className="grid2">
-            <label>
-              PAN No.
-              <input
-                value={f.pan}
-                onChange={(e) => set('pan', e.target.value.toUpperCase())}
-                placeholder="ABCDE1234F"
-                maxLength={10}
-                readOnly={panLocked}
-                className={panErr ? 'is-invalid' : ''}
-              />
-              {panLocked ? (
-                <span className="field-ok">PAN verified when this case was raised.</span>
-              ) : panErr ? (
-                <span className="field-err">{panErr}</span>
-              ) : panChk.loading ? (
-                <span className="field-hint">Checking PAN with the income-tax registry…</span>
-              ) : panChk.result?.verified ? (
-                <span className="field-ok">
-                  Verified{panChk.result.name ? `: ${panChk.result.name}` : ''}
-                  {panChk.result.status ? ` (${panChk.result.status})` : ''}
-                </span>
-              ) : panChk.result?.message ? (
-                <span className="field-hint">{panChk.result.message}</span>
-              ) : (
-                <span className="field-cap">
-                  Checked automatically against the income-tax registry.
-                </span>
-              )}
-              {panVerified && msmeChk.loading ? (
-                <span className="field-cap">Checking MSME / Udyam registration…</span>
-              ) : panVerified && msmeChk.result && !msmeChk.result.verified ? (
-                <span className="field-cap">
-                  {msmeChk.result.message ?? 'No MSME / Udyam registration for this PAN.'}
-                </span>
-              ) : null}
-            </label>
-            {panVerified && panLocked && (
+      <form
+        ref={formRef}
+        onSubmit={submit}
+        onKeyDown={(e) => {
+          // Enter in a text box must advance the step, not submit a half-filled case.
+          if (
+            e.key === 'Enter' &&
+            step < STEPS.length - 1 &&
+            (e.target as HTMLElement).tagName === 'INPUT'
+          ) {
+            e.preventDefault();
+            goTo(step + 1);
+          }
+        }}
+      >
+        <div data-step="0" hidden={step !== 0}>
+          <section className="card">
+            <h2>Vendor</h2>
+            <div className="grid2">
               <label>
-                GST No.
-                <input
-                  value={f.gstin}
-                  onChange={(e) => set('gstin', e.target.value.toUpperCase())}
-                  placeholder="27ABCDE1234F1Z5"
-                  maxLength={15}
-                  className={gstErr ? 'is-invalid' : ''}
-                />
-                {gstErr ? (
-                  <span className="field-err">{gstErr}</span>
-                ) : (
-                  <span className="field-cap">
-                    Edit the GSTIN if needed, then fetch its details.
-                  </span>
-                )}
-                <div className="row-actions">
-                  <button
-                    type="button"
-                    className="btn btn--sm"
-                    onClick={verifyGst}
-                    disabled={
-                      gstChk.loading || !/^[0-9A-Z]{15}$/.test(f.gstin.trim().toUpperCase())
-                    }
-                  >
-                    {gstChk.loading ? 'Fetching GST details…' : 'Fetch GST details'}
-                  </button>
-                  {gstChk.result && !gstChk.result.verified && gstChk.result.message ? (
-                    <span className="field-hint">{gstChk.result.message}</span>
-                  ) : null}
-                </div>
-              </label>
-            )}
-            {panVerified && !panLocked && (
-              <label>
-                GST No.
+                Vendor category
                 <select
-                  value={gstOther ? '__other__' : f.gstin}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === '__other__') {
-                      setGstOther(true);
-                      set('gstin', '');
-                    } else {
-                      setGstOther(false);
-                      set('gstin', v);
-                    }
-                  }}
+                  value={f.categoryKey}
+                  onChange={(e) => setCategory(e.target.value)}
+                  required
                 >
-                  <option value="">
-                    {panChk.loading
-                      ? 'Fetching GSTINs…'
-                      : gstList.length
-                        ? 'Select GSTIN…'
-                        : 'No GSTINs found for this PAN'}
-                  </option>
-                  {gstList.map((g) => (
-                    <option key={g.gstin} value={g.gstin}>
-                      {g.gstin}
-                      {g.authStatus ? ` (${g.authStatus})` : ''}
+                  {cats.map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {c.name}
                     </option>
                   ))}
-                  <option value="__other__">Other (enter manually)</option>
                 </select>
-                {gstOther && (
+              </label>
+              <label>
+                Sub vendor category
+                <select
+                  value={f.subCategoryKey}
+                  onChange={(e) => set('subCategoryKey', e.target.value)}
+                  disabled={subs.length === 0}
+                >
+                  <option value="">
+                    {subs.length === 0 ? 'None for this category' : 'Select a sub-category…'}
+                  </option>
+                  {subs.map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section className="card">
+            <h2>Tax identifiers</h2>
+            <p className="section-intro">
+              Enter the PAN — its registry details and any MSME / Udyam registration load
+              automatically. Then pick a GSTIN and fetch its details to add GST information.
+            </p>
+            <div className="grid2">
+              <label>
+                PAN No.
+                <input
+                  value={f.pan}
+                  onChange={(e) => set('pan', e.target.value.toUpperCase())}
+                  placeholder="ABCDE1234F"
+                  maxLength={10}
+                  readOnly={panLocked}
+                  className={panErr ? 'is-invalid' : ''}
+                />
+                {panLocked ? (
+                  <span className="field-ok">PAN verified when this case was raised.</span>
+                ) : panErr ? (
+                  <span className="field-err">{panErr}</span>
+                ) : panChk.loading ? (
+                  <span className="field-hint">Checking PAN with the income-tax registry…</span>
+                ) : panChk.result?.verified ? (
+                  <span className="field-ok">
+                    Verified{panChk.result.name ? `: ${panChk.result.name}` : ''}
+                    {panChk.result.status ? ` (${panChk.result.status})` : ''}
+                  </span>
+                ) : panChk.result?.message ? (
+                  <span className="field-hint">{panChk.result.message}</span>
+                ) : (
+                  <span className="field-cap">
+                    Checked automatically against the income-tax registry.
+                  </span>
+                )}
+                {panVerified && msmeChk.loading ? (
+                  <span className="field-cap">Checking MSME / Udyam registration…</span>
+                ) : panVerified && msmeChk.result && !msmeChk.result.verified ? (
+                  <span className="field-cap">
+                    {msmeChk.result.message ?? 'No MSME / Udyam registration for this PAN.'}
+                  </span>
+                ) : null}
+              </label>
+              {panVerified && panLocked && (
+                <label>
+                  GST No.
                   <input
                     value={f.gstin}
                     onChange={(e) => set('gstin', e.target.value.toUpperCase())}
                     placeholder="27ABCDE1234F1Z5"
                     maxLength={15}
                     className={gstErr ? 'is-invalid' : ''}
-                    style={{ marginTop: 6 }}
                   />
-                )}
-                {gstErr ? (
-                  <span className="field-err">{gstErr}</span>
-                ) : gstRes?.valid && f.pan ? (
-                  <span className="field-ok">GSTIN valid and matches PAN.</span>
-                ) : (
-                  <span className="field-cap">
-                    GSTINs linked to the PAN load automatically. Pick one (or add another), then
-                    fetch its registration details.
-                  </span>
-                )}
-                <div className="row-actions">
-                  <button
-                    type="button"
-                    className="btn btn--sm"
-                    onClick={verifyGst}
-                    disabled={
-                      gstChk.loading || !/^[0-9A-Z]{15}$/.test(f.gstin.trim().toUpperCase())
-                    }
-                  >
-                    {gstChk.loading ? 'Fetching GST details…' : 'Fetch GST details'}
-                  </button>
-                  {gstChk.result && !gstChk.result.verified && gstChk.result.message ? (
-                    <span className="field-hint">{gstChk.result.message}</span>
-                  ) : null}
-                </div>
-              </label>
-            )}
-
-            {panChk.result?.verified && panChk.result.fields && (
-              <div className="span2 panbox">
-                <div className="panbox__head">
-                  <strong className="panbox__title">PAN details</strong>
-                  <span className="pill pill--ok">Verified</span>
-                  <span className="muted">income-tax registry</span>
-                </div>
-                <dl className="panbox__grid">
-                  <Detail label="Name" value={panChk.result.fields.name} />
-                  <Detail label="Father's name" value={panChk.result.fields.fatherName} />
-                  <Detail label="Category" value={panChk.result.fields.category} />
-                  <Detail label="PAN status" value={panChk.result.fields.panStatus} />
-                  <Detail
-                    label="Aadhaar link status"
-                    value={
-                      panChk.result.fields.aadhaarLinked === true
-                        ? `Linked${panChk.result.fields.maskedAadhaar ? ` (${panChk.result.fields.maskedAadhaar})` : ''}`
-                        : panChk.result.fields.aadhaarLinked === false
-                          ? 'PAN not linked with Aadhaar'
-                          : (panChk.result.fields.aadhaarStatus ?? 'Not available')
-                    }
-                  />
-                </dl>
-              </div>
-            )}
-
-            {gstChk.result?.verified && gstChk.result.details && (
-              <div className="span2 panbox">
-                <div className="panbox__head">
-                  <strong className="panbox__title">GST registration</strong>
-                  <span
-                    className={`pill ${
-                      /active/i.test(gstChk.result.details.gstStatus ?? '')
-                        ? 'pill--ok'
-                        : 'pill--warn'
-                    }`}
-                  >
-                    {gstChk.result.details.gstStatus ?? 'status unknown'}
-                  </span>
-                  <span className="muted">{gstChk.result.details.gstin}</span>
-                </div>
-                <dl className="panbox__grid">
-                  <Detail label="Legal name" value={gstChk.result.details.legalName} />
-                  <Detail label="Trade name" value={gstChk.result.details.tradeName} />
-                  <Detail
-                    label="Constitution of business"
-                    value={gstChk.result.details.constitutionOfBusiness}
-                  />
-                  <Detail label="Taxpayer type" value={gstChk.result.details.taxPayerType} />
-                  <Detail label="GST status" value={gstChk.result.details.gstStatus} />
-                  <Detail
-                    label="Registration date"
-                    value={gstChk.result.details.registrationDate}
-                  />
-                  <Detail
-                    label="Principal place of business"
-                    value={gstChk.result.details.principalAddress}
-                  />
-                  <Detail label="State" value={gstChk.result.details.state} />
-                  <Detail label="City" value={gstChk.result.details.city} />
-                  <Detail label="Pincode" value={gstChk.result.details.pincode} />
-                </dl>
-                {gstChk.result.details.latestFiling && (
-                  <div className="panbox__sub">
-                    <h3>Latest filing</h3>
-                    <dl className="panbox__grid">
-                      <Detail
-                        label="Filing year"
-                        value={gstChk.result.details.latestFiling.filingYear}
-                      />
-                      <Detail
-                        label="Period"
-                        value={gstChk.result.details.latestFiling.monthOfFiling}
-                      />
-                      <Detail
-                        label="Return type"
-                        value={gstChk.result.details.latestFiling.gstType}
-                      />
-                      <Detail
-                        label="Mode"
-                        value={gstChk.result.details.latestFiling.methodOfFilling}
-                      />
-                      <Detail
-                        label="Filed on"
-                        value={gstChk.result.details.latestFiling.dateOfFiling}
-                      />
-                      <Detail label="Status" value={gstChk.result.details.latestFiling.gstStatus} />
-                    </dl>
+                  {gstErr ? (
+                    <span className="field-err">{gstErr}</span>
+                  ) : (
+                    <span className="field-cap">
+                      Edit the GSTIN if needed, then fetch its details.
+                    </span>
+                  )}
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="btn btn--sm"
+                      onClick={verifyGst}
+                      disabled={
+                        gstChk.loading || !/^[0-9A-Z]{15}$/.test(f.gstin.trim().toUpperCase())
+                      }
+                    >
+                      {gstChk.loading ? 'Fetching GST details…' : 'Fetch GST details'}
+                    </button>
+                    {gstChk.result && !gstChk.result.verified && gstChk.result.message ? (
+                      <span className="field-hint">{gstChk.result.message}</span>
+                    ) : null}
                   </div>
-                )}
-              </div>
-            )}
-
-            {msmeChk.result?.verified && msmeChk.result.details && (
-              <div className="span2 panbox">
-                <div className="panbox__head">
-                  <strong className="panbox__title">MSME / Udyam registration</strong>
-                  <span className="pill pill--ok">
-                    {msmeChk.result.details.enterpriseType ?? 'Registered'}
-                  </span>
-                  <span className="muted">{msmeChk.result.pan}</span>
-                </div>
-                <dl className="panbox__grid">
-                  <Detail label="Udyam / MSME number" value={msmeChk.result.details.udyamNumber} />
-                  <Detail
-                    label="Registration date"
-                    value={msmeChk.result.details.registrationDate}
-                  />
-                  <Detail
-                    label="Organization type"
-                    value={msmeChk.result.details.organizationType}
-                  />
-                  <Detail label="Enterprise type" value={msmeChk.result.details.enterpriseType} />
-                  <Detail label="Enterprise name" value={msmeChk.result.details.officialName} />
-                  <Detail label="Major activity" value={msmeChk.result.details.majorActivity} />
-                </dl>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {!panVerified && (
-          <p className="note">Verify the vendor&apos;s PAN above to continue filling the case.</p>
-        )}
-
-        {panVerified && (
-          <>
-            <section className="card">
-              <h2>Bank details</h2>
-              <div className="grid2">
-                <label>
-                  Bank account no.
-                  <input
-                    value={f.bankAccount}
-                    onChange={(e) => set('bankAccount', e.target.value)}
-                  />
                 </label>
+              )}
+              {panVerified && !panLocked && (
                 <label>
-                  IFSC code
-                  <input
-                    value={f.ifsc}
-                    onChange={(e) => set('ifsc', e.target.value.toUpperCase())}
-                    placeholder="HDFC0001234"
-                    maxLength={11}
-                    className={ifscErr ? 'is-invalid' : ''}
-                  />
-                  {ifscErr ? (
-                    <span className="field-err">{ifscErr}</span>
-                  ) : ifscBusy ? (
-                    <span className="field-hint">Looking up bank…</span>
-                  ) : ifscNote ? (
-                    <span className="field-hint">{ifscNote}</span>
-                  ) : null}
-                </label>
-                <label>
-                  Bank name
-                  <input
-                    value={f.bankName}
-                    onChange={(e) => set('bankName', e.target.value)}
-                    placeholder="Auto-filled from IFSC"
-                  />
-                </label>
-                <label>
-                  Branch
-                  <input
-                    value={f.branch}
-                    onChange={(e) => set('branch', e.target.value)}
-                    placeholder="Auto-filled from IFSC"
-                  />
-                </label>
-
-                <div className="span2 row-actions">
-                  <button
-                    type="button"
-                    className="btn btn--sm"
-                    onClick={verifyBank}
-                    disabled={
-                      bankChk.loading ||
-                      !/^\d{5,20}$/.test(f.bankAccount.replace(/\s+/g, '')) ||
-                      !validateIfsc(f.ifsc.trim().toUpperCase()).valid
-                    }
+                  GST No.
+                  <select
+                    value={gstOther ? '__other__' : f.gstin}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '__other__') {
+                        setGstOther(true);
+                        set('gstin', '');
+                      } else {
+                        setGstOther(false);
+                        set('gstin', v);
+                      }
+                    }}
                   >
-                    {bankChk.loading ? 'Verifying account…' : 'Verify account'}
-                  </button>
-                </div>
-
-                {bankChk.result && !bankChk.result.verified && bankChk.result.message ? (
-                  <div className="span2 namematch namematch--warn">{bankChk.result.message}</div>
-                ) : null}
-
-                {bankChk.result?.verified && bankChk.result.details && (
-                  <div className="span2 panbox">
-                    <div className="panbox__head">
-                      <span
-                        className={`pill ${bankChk.result.details.active ? 'pill--ok' : 'pill--warn'}`}
-                      >
-                        Account {bankChk.result.details.active ? 'active' : 'inactive'}
-                      </span>
-                      <span className="muted">
-                        {bankChk.result.details.ifsc} · penny-less verification
-                      </span>
-                    </div>
-                    <dl className="panbox__grid">
-                      <Detail
-                        label="Account holder name"
-                        value={bankChk.result.details.holderName}
-                      />
-                      <Detail label="Account number" value={bankChk.result.details.accountNumber} />
-                      <Detail label="IFSC" value={bankChk.result.details.ifsc} />
-                      <Detail
-                        label="Active status"
-                        value={
-                          bankChk.result.details.active === true
-                            ? 'Active'
-                            : bankChk.result.details.active === false
-                              ? 'Inactive'
-                              : (bankChk.result.details.activeStatus ?? 'Unknown')
-                        }
-                      />
-                    </dl>
-                    {bankChk.result.nameMatch && (
-                      <div
-                        className={`namematch ${bankChk.result.nameMatch.matched ? 'namematch--ok' : 'namematch--warn'}`}
-                      >
-                        {bankChk.result.nameMatch.matched ? (
-                          <>
-                            Holder name matches the {bankChk.result.nameMatch.matchedAgainst} (
-                            {bankChk.result.nameMatch.score}%).
-                          </>
-                        ) : (
-                          <>
-                            Holder name does <strong>not</strong> match (best{' '}
-                            {bankChk.result.nameMatch.score}% vs{' '}
-                            {bankChk.result.nameMatch.matchedAgainst ?? 'PAN/legal/trade name'}). At
-                            least 80% is required — confirm the account belongs to the vendor.
-                          </>
-                        )}
-                      </div>
-                    )}
-                    {bankChk.result.nameMatch === undefined && (
-                      <div className="namematch namematch--warn">
-                        Verify the PAN or GST first so the holder name can be matched against the
-                        vendor&apos;s name.
-                      </div>
-                    )}
+                    <option value="">
+                      {panChk.loading
+                        ? 'Fetching GSTINs…'
+                        : gstList.length
+                          ? 'Select GSTIN…'
+                          : 'No GSTINs found for this PAN'}
+                    </option>
+                    {gstList.map((g) => (
+                      <option key={g.gstin} value={g.gstin}>
+                        {g.gstin}
+                        {g.authStatus ? ` (${g.authStatus})` : ''}
+                      </option>
+                    ))}
+                    <option value="__other__">Other (enter manually)</option>
+                  </select>
+                  {gstOther && (
+                    <input
+                      value={f.gstin}
+                      onChange={(e) => set('gstin', e.target.value.toUpperCase())}
+                      placeholder="27ABCDE1234F1Z5"
+                      maxLength={15}
+                      className={gstErr ? 'is-invalid' : ''}
+                      style={{ marginTop: 6 }}
+                    />
+                  )}
+                  {gstErr ? (
+                    <span className="field-err">{gstErr}</span>
+                  ) : gstRes?.valid && f.pan ? (
+                    <span className="field-ok">GSTIN valid and matches PAN.</span>
+                  ) : (
+                    <span className="field-cap">
+                      GSTINs linked to the PAN load automatically. Pick one (or add another), then
+                      fetch its registration details.
+                    </span>
+                  )}
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="btn btn--sm"
+                      onClick={verifyGst}
+                      disabled={
+                        gstChk.loading || !/^[0-9A-Z]{15}$/.test(f.gstin.trim().toUpperCase())
+                      }
+                    >
+                      {gstChk.loading ? 'Fetching GST details…' : 'Fetch GST details'}
+                    </button>
+                    {gstChk.result && !gstChk.result.verified && gstChk.result.message ? (
+                      <span className="field-hint">{gstChk.result.message}</span>
+                    ) : null}
                   </div>
-                )}
-              </div>
-            </section>
+                </label>
+              )}
 
-            <section className="card">
-              <h2>Authorized signatory</h2>
-              <p className="section-intro">
-                The person legally authorised to sign on behalf of the vendor.
-              </p>
-              <div className="grid2">
-                <label>
-                  Name (as per Aadhaar)
-                  <input
-                    value={f.signatoryName}
-                    onChange={(e) => set('signatoryName', e.target.value)}
-                    placeholder="Full name as on Aadhaar"
-                  />
-                </label>
-                <label>
-                  PAN No.
-                  <input
-                    value={f.signatoryPan}
-                    onChange={(e) => set('signatoryPan', e.target.value.toUpperCase())}
-                    placeholder="ABCDE1234F"
-                    maxLength={10}
-                    className={sigPanErr ? 'is-invalid' : ''}
-                  />
-                  {sigPanErr ? <span className="field-err">{sigPanErr}</span> : null}
-                </label>
-                <label>
-                  Mobile No.
-                  <input
-                    value={f.signatoryMobile}
-                    onChange={(e) =>
-                      set('signatoryMobile', e.target.value.replace(/\D/g, '').slice(0, 10))
-                    }
-                    placeholder="9876543210"
-                    inputMode="numeric"
-                    maxLength={10}
-                    className={sigMobileErr ? 'is-invalid' : ''}
-                  />
-                  {sigMobileErr ? <span className="field-err">{sigMobileErr}</span> : null}
-                </label>
-                <label>
-                  Email ID
-                  <input
-                    type="email"
-                    value={f.signatoryEmail}
-                    onChange={(e) => set('signatoryEmail', e.target.value)}
-                    placeholder="name@company.com"
-                    className={sigEmailErr ? 'is-invalid' : ''}
-                  />
-                  {sigEmailErr ? <span className="field-err">{sigEmailErr}</span> : null}
-                </label>
-              </div>
-            </section>
-
-            <section className="card">
-              <h2>Business SPOC</h2>
-              <p className="section-intro">
-                Single point of contact at the vendor for this onboarding.
-              </p>
-              <label className="checkbox" style={{ marginBottom: 12 }}>
-                <input
-                  type="checkbox"
-                  checked={spocSame}
-                  onChange={(e) => setSpocSame(e.target.checked)}
-                />
-                Same as authorised signatory
-              </label>
-              <div className="grid2">
-                <label>
-                  SPOC name
-                  <input
-                    value={f.contactName}
-                    disabled={spocSame}
-                    onChange={(e) => set('contactName', e.target.value)}
-                  />
-                </label>
-                <label>
-                  SPOC email
-                  <input
-                    type="email"
-                    value={f.contactEmail}
-                    disabled={spocSame}
-                    onChange={(e) => set('contactEmail', e.target.value)}
-                  />
-                </label>
-                <label>
-                  SPOC phone
-                  <input
-                    value={f.contactPhone}
-                    disabled={spocSame}
-                    onChange={(e) => set('contactPhone', e.target.value)}
-                  />
-                </label>
-              </div>
-            </section>
-
-            <section className="card">
-              <h2>Information security</h2>
-              <p className="section-intro">
-                If the vendor needs any IT access or access to systems, network, applications or
-                PII, the case is routed to InfoSec for review before it proceeds.
-              </p>
-              <div className="qlist">
-                {INFOSEC_QUESTIONS.map((q) => {
-                  const val = (f as unknown as Record<string, string>)[q.key];
-                  return (
-                    <div key={q.key} className="qrow">
-                      <span className="qrow__label">{q.label}</span>
-                      <div className="qrow__opts">
-                        <label className="radio">
-                          <input
-                            type="radio"
-                            name={q.key}
-                            checked={val === 'yes'}
-                            onChange={() => set(q.key as keyof typeof f, 'yes')}
-                          />
-                          Yes
-                        </label>
-                        <label className="radio">
-                          <input
-                            type="radio"
-                            name={q.key}
-                            checked={val === 'no'}
-                            onChange={() => set(q.key as keyof typeof f, 'no')}
-                          />
-                          No
-                        </label>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {infosecWillRoute && (
-                <div className="namematch namematch--warn" style={{ marginTop: 14 }}>
-                  Based on these answers, this case will be routed to{' '}
-                  <strong>InfoSec review</strong> and held until they sign off.
+              {panChk.result?.verified && panChk.result.fields && (
+                <div className="span2 panbox">
+                  <div className="panbox__head">
+                    <strong className="panbox__title">PAN details</strong>
+                    <span className="pill pill--ok">Verified</span>
+                    <span className="muted">income-tax registry</span>
+                  </div>
+                  <dl className="panbox__grid">
+                    <Detail label="Name" value={panChk.result.fields.name} />
+                    <Detail label="Father's name" value={panChk.result.fields.fatherName} />
+                    <Detail label="Category" value={panChk.result.fields.category} />
+                    <Detail label="PAN status" value={panChk.result.fields.panStatus} />
+                    <Detail
+                      label="Aadhaar link status"
+                      value={
+                        panChk.result.fields.aadhaarLinked === true
+                          ? `Linked${panChk.result.fields.maskedAadhaar ? ` (${panChk.result.fields.maskedAadhaar})` : ''}`
+                          : panChk.result.fields.aadhaarLinked === false
+                            ? 'PAN not linked with Aadhaar'
+                            : (panChk.result.fields.aadhaarStatus ?? 'Not available')
+                      }
+                    />
+                  </dl>
                 </div>
               )}
-            </section>
 
-            <button className="btn" type="submit" disabled={busy}>
-              {busy ? 'Submitting…' : 'Raise case'}
-            </button>
-          </>
-        )}
+              {gstChk.result?.verified && gstChk.result.details && (
+                <div className="span2 panbox">
+                  <div className="panbox__head">
+                    <strong className="panbox__title">GST registration</strong>
+                    <span
+                      className={`pill ${
+                        /active/i.test(gstChk.result.details.gstStatus ?? '')
+                          ? 'pill--ok'
+                          : 'pill--warn'
+                      }`}
+                    >
+                      {gstChk.result.details.gstStatus ?? 'status unknown'}
+                    </span>
+                    <span className="muted">{gstChk.result.details.gstin}</span>
+                  </div>
+                  <dl className="panbox__grid">
+                    <Detail label="Legal name" value={gstChk.result.details.legalName} />
+                    <Detail label="Trade name" value={gstChk.result.details.tradeName} />
+                    <Detail
+                      label="Constitution of business"
+                      value={gstChk.result.details.constitutionOfBusiness}
+                    />
+                    <Detail label="Taxpayer type" value={gstChk.result.details.taxPayerType} />
+                    <Detail label="GST status" value={gstChk.result.details.gstStatus} />
+                    <Detail
+                      label="Registration date"
+                      value={gstChk.result.details.registrationDate}
+                    />
+                    <Detail
+                      label="Principal place of business"
+                      value={gstChk.result.details.principalAddress}
+                    />
+                    <Detail label="State" value={gstChk.result.details.state} />
+                    <Detail label="City" value={gstChk.result.details.city} />
+                    <Detail label="Pincode" value={gstChk.result.details.pincode} />
+                  </dl>
+                  {gstChk.result.details.latestFiling && (
+                    <div className="panbox__sub">
+                      <h3>Latest filing</h3>
+                      <dl className="panbox__grid">
+                        <Detail
+                          label="Filing year"
+                          value={gstChk.result.details.latestFiling.filingYear}
+                        />
+                        <Detail
+                          label="Period"
+                          value={gstChk.result.details.latestFiling.monthOfFiling}
+                        />
+                        <Detail
+                          label="Return type"
+                          value={gstChk.result.details.latestFiling.gstType}
+                        />
+                        <Detail
+                          label="Mode"
+                          value={gstChk.result.details.latestFiling.methodOfFilling}
+                        />
+                        <Detail
+                          label="Filed on"
+                          value={gstChk.result.details.latestFiling.dateOfFiling}
+                        />
+                        <Detail
+                          label="Status"
+                          value={gstChk.result.details.latestFiling.gstStatus}
+                        />
+                      </dl>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {msmeChk.result?.verified && msmeChk.result.details && (
+                <div className="span2 panbox">
+                  <div className="panbox__head">
+                    <strong className="panbox__title">MSME / Udyam registration</strong>
+                    <span className="pill pill--ok">
+                      {msmeChk.result.details.enterpriseType ?? 'Registered'}
+                    </span>
+                    <span className="muted">{msmeChk.result.pan}</span>
+                  </div>
+                  <dl className="panbox__grid">
+                    <Detail
+                      label="Udyam / MSME number"
+                      value={msmeChk.result.details.udyamNumber}
+                    />
+                    <Detail
+                      label="Registration date"
+                      value={msmeChk.result.details.registrationDate}
+                    />
+                    <Detail
+                      label="Organization type"
+                      value={msmeChk.result.details.organizationType}
+                    />
+                    <Detail label="Enterprise type" value={msmeChk.result.details.enterpriseType} />
+                    <Detail label="Enterprise name" value={msmeChk.result.details.officialName} />
+                    <Detail label="Major activity" value={msmeChk.result.details.majorActivity} />
+                  </dl>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {!panVerified && (
+            <p className="note">Verify the vendor&apos;s PAN above to continue filling the case.</p>
+          )}
+
+          {panVerified && (
+            <>
+              <section className="card">
+                <h2>Bank details</h2>
+                <div className="grid2">
+                  <label>
+                    Bank account no.
+                    <input
+                      value={f.bankAccount}
+                      onChange={(e) => set('bankAccount', e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    IFSC code
+                    <input
+                      value={f.ifsc}
+                      onChange={(e) => set('ifsc', e.target.value.toUpperCase())}
+                      placeholder="HDFC0001234"
+                      maxLength={11}
+                      className={ifscErr ? 'is-invalid' : ''}
+                    />
+                    {ifscErr ? (
+                      <span className="field-err">{ifscErr}</span>
+                    ) : ifscBusy ? (
+                      <span className="field-hint">Looking up bank…</span>
+                    ) : ifscNote ? (
+                      <span className="field-hint">{ifscNote}</span>
+                    ) : null}
+                  </label>
+                  <label>
+                    Bank name
+                    <input
+                      value={f.bankName}
+                      onChange={(e) => set('bankName', e.target.value)}
+                      placeholder="Auto-filled from IFSC"
+                    />
+                  </label>
+                  <label>
+                    Branch
+                    <input
+                      value={f.branch}
+                      onChange={(e) => set('branch', e.target.value)}
+                      placeholder="Auto-filled from IFSC"
+                    />
+                  </label>
+
+                  <div className="span2 row-actions">
+                    <button
+                      type="button"
+                      className="btn btn--sm"
+                      onClick={verifyBank}
+                      disabled={
+                        bankChk.loading ||
+                        !/^\d{5,20}$/.test(f.bankAccount.replace(/\s+/g, '')) ||
+                        !validateIfsc(f.ifsc.trim().toUpperCase()).valid
+                      }
+                    >
+                      {bankChk.loading ? 'Verifying account…' : 'Verify account'}
+                    </button>
+                  </div>
+
+                  {bankChk.result && !bankChk.result.verified && bankChk.result.message ? (
+                    <div className="span2 namematch namematch--warn">{bankChk.result.message}</div>
+                  ) : null}
+
+                  {bankChk.result?.verified && bankChk.result.details && (
+                    <div className="span2 panbox">
+                      <div className="panbox__head">
+                        <span
+                          className={`pill ${bankChk.result.details.active ? 'pill--ok' : 'pill--warn'}`}
+                        >
+                          Account {bankChk.result.details.active ? 'active' : 'inactive'}
+                        </span>
+                        <span className="muted">
+                          {bankChk.result.details.ifsc} · penny-less verification
+                        </span>
+                      </div>
+                      <dl className="panbox__grid">
+                        <Detail
+                          label="Account holder name"
+                          value={bankChk.result.details.holderName}
+                        />
+                        <Detail
+                          label="Account number"
+                          value={bankChk.result.details.accountNumber}
+                        />
+                        <Detail label="IFSC" value={bankChk.result.details.ifsc} />
+                        <Detail
+                          label="Active status"
+                          value={
+                            bankChk.result.details.active === true
+                              ? 'Active'
+                              : bankChk.result.details.active === false
+                                ? 'Inactive'
+                                : (bankChk.result.details.activeStatus ?? 'Unknown')
+                          }
+                        />
+                      </dl>
+                      {bankChk.result.nameMatch && (
+                        <div
+                          className={`namematch ${bankChk.result.nameMatch.matched ? 'namematch--ok' : 'namematch--warn'}`}
+                        >
+                          {bankChk.result.nameMatch.matched ? (
+                            <>
+                              Holder name matches the {bankChk.result.nameMatch.matchedAgainst} (
+                              {bankChk.result.nameMatch.score}%).
+                            </>
+                          ) : (
+                            <>
+                              Holder name does <strong>not</strong> match (best{' '}
+                              {bankChk.result.nameMatch.score}% vs{' '}
+                              {bankChk.result.nameMatch.matchedAgainst ?? 'PAN/legal/trade name'}).
+                              At least 80% is required — confirm the account belongs to the vendor.
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {bankChk.result.nameMatch === undefined && (
+                        <div className="namematch namematch--warn">
+                          Verify the PAN or GST first so the holder name can be matched against the
+                          vendor&apos;s name.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <div className="req__actions">
+                <button className="btn" type="button" onClick={() => goTo(1)}>
+                  Next
+                </button>
+                {draftControls}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div data-step="1" hidden={step !== 1}>
+          {panVerified && (
+            <>
+              <section className="card">
+                <h2>Information security</h2>
+                <p className="section-intro">
+                  If the vendor needs any IT access or access to systems, network, applications or
+                  PII, the case is routed to InfoSec for review before it proceeds.
+                </p>
+                <div className="qlist">
+                  {INFOSEC_QUESTIONS.map((q) => {
+                    const val = (f as unknown as Record<string, string>)[q.key];
+                    return (
+                      <div key={q.key} className="qrow">
+                        <span className="qrow__label">{q.label}</span>
+                        <div className="qrow__opts">
+                          <label className="radio">
+                            <input
+                              type="radio"
+                              name={q.key}
+                              checked={val === 'yes'}
+                              onChange={() => set(q.key as keyof typeof f, 'yes')}
+                            />
+                            Yes
+                          </label>
+                          <label className="radio">
+                            <input
+                              type="radio"
+                              name={q.key}
+                              checked={val === 'no'}
+                              onChange={() => set(q.key as keyof typeof f, 'no')}
+                            />
+                            No
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {infosecWillRoute && (
+                  <div className="namematch namematch--warn" style={{ marginTop: 14 }}>
+                    Based on these answers, this case will be routed to{' '}
+                    <strong>InfoSec review</strong> and held until they sign off.
+                  </div>
+                )}
+              </section>
+
+              <section className="card">
+                <h2>Authorized signatory</h2>
+                <p className="section-intro">
+                  The person legally authorised to sign on behalf of the vendor.
+                </p>
+                <div className="grid2">
+                  <label>
+                    Name (as per Aadhaar)
+                    <input
+                      value={f.signatoryName}
+                      onChange={(e) => set('signatoryName', e.target.value)}
+                      placeholder="Full name as on Aadhaar"
+                    />
+                  </label>
+                  <label>
+                    PAN No.
+                    <input
+                      value={f.signatoryPan}
+                      onChange={(e) => set('signatoryPan', e.target.value.toUpperCase())}
+                      placeholder="ABCDE1234F"
+                      maxLength={10}
+                      className={sigPanErr ? 'is-invalid' : ''}
+                    />
+                    {sigPanErr ? <span className="field-err">{sigPanErr}</span> : null}
+                  </label>
+                  <label>
+                    Mobile No.
+                    <input
+                      value={f.signatoryMobile}
+                      onChange={(e) =>
+                        set('signatoryMobile', e.target.value.replace(/\D/g, '').slice(0, 10))
+                      }
+                      placeholder="9876543210"
+                      inputMode="numeric"
+                      maxLength={10}
+                      className={sigMobileErr ? 'is-invalid' : ''}
+                    />
+                    {sigMobileErr ? <span className="field-err">{sigMobileErr}</span> : null}
+                  </label>
+                  <label>
+                    Email ID
+                    <input
+                      type="email"
+                      value={f.signatoryEmail}
+                      onChange={(e) => set('signatoryEmail', e.target.value)}
+                      placeholder="name@company.com"
+                      className={sigEmailErr ? 'is-invalid' : ''}
+                    />
+                    {sigEmailErr ? <span className="field-err">{sigEmailErr}</span> : null}
+                  </label>
+                </div>
+              </section>
+
+              <section className="card">
+                <h2>Business SPOC</h2>
+                <p className="section-intro">
+                  Single point of contact at the vendor for this onboarding.
+                </p>
+                <label className="checkbox" style={{ marginBottom: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={spocSame}
+                    onChange={(e) => setSpocSame(e.target.checked)}
+                  />
+                  Same as authorised signatory
+                </label>
+                <div className="grid2">
+                  <label>
+                    SPOC name
+                    <input
+                      value={f.contactName}
+                      disabled={spocSame}
+                      onChange={(e) => set('contactName', e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    SPOC email
+                    <input
+                      type="email"
+                      value={f.contactEmail}
+                      disabled={spocSame}
+                      onChange={(e) => set('contactEmail', e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    SPOC phone
+                    <input
+                      value={f.contactPhone}
+                      disabled={spocSame}
+                      onChange={(e) => set('contactPhone', e.target.value)}
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <div className="req__actions">
+                <button className="btn btn--ghost" type="button" onClick={() => goTo(0)}>
+                  Back
+                </button>
+                <button className="btn" type="button" onClick={() => goTo(2)}>
+                  Next
+                </button>
+                {draftControls}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div data-step="2" hidden={step !== 2}>
+          {panVerified && (
+            <>
+              <section className="card">
+                <h2>Management structure</h2>
+                <p className="section-intro">
+                  List every partner or director with their residential details. Personal details
+                  are encrypted when saved.
+                </p>
+                {f.partners.length > 0 && (
+                  <div className="partners__scroll">
+                    <table className="partners__tbl">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Name of partner</th>
+                          <th>Date of birth</th>
+                          <th>Marital status</th>
+                          <th>Gender</th>
+                          <th>Father&apos;s name</th>
+                          <th>Spouse name</th>
+                          <th>PAN</th>
+                          <th>Residence address</th>
+                          <th>Personal mobile no.</th>
+                          <th>Residence pin code</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {f.partners.map((p, i) => (
+                          <tr key={i}>
+                            <td className="partners__n">{i + 1}</td>
+                            <td>
+                              <input
+                                aria-label={`Partner ${i + 1} name`}
+                                value={p.name}
+                                maxLength={200}
+                                required
+                                onChange={(e) => setPartner(i, { name: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="date"
+                                aria-label={`Partner ${i + 1} date of birth`}
+                                value={p.dob}
+                                max={new Date().toISOString().slice(0, 10)}
+                                required
+                                onChange={(e) => setPartner(i, { dob: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <select
+                                aria-label={`Partner ${i + 1} marital status`}
+                                value={p.maritalStatus}
+                                required
+                                onChange={(e) =>
+                                  setPartner(i, {
+                                    maritalStatus: e.target.value,
+                                    ...(e.target.value !== 'Married' ? { spouseName: '' } : {}),
+                                  })
+                                }
+                              >
+                                <option value="">Select</option>
+                                <option>Single</option>
+                                <option>Married</option>
+                                <option>Divorced</option>
+                                <option>Widowed</option>
+                              </select>
+                            </td>
+                            <td>
+                              <select
+                                aria-label={`Partner ${i + 1} gender`}
+                                value={p.gender}
+                                required
+                                onChange={(e) => setPartner(i, { gender: e.target.value })}
+                              >
+                                <option value="">Select</option>
+                                <option>Male</option>
+                                <option>Female</option>
+                                <option>Other</option>
+                              </select>
+                            </td>
+                            <td>
+                              <input
+                                aria-label={`Partner ${i + 1} father's name`}
+                                value={p.fatherName}
+                                maxLength={200}
+                                required
+                                onChange={(e) => setPartner(i, { fatherName: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                aria-label={`Partner ${i + 1} spouse name`}
+                                value={p.spouseName}
+                                maxLength={200}
+                                disabled={p.maritalStatus !== 'Married'}
+                                required={p.maritalStatus === 'Married'}
+                                placeholder={p.maritalStatus === 'Married' ? '' : 'n/a'}
+                                onChange={(e) => setPartner(i, { spouseName: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                aria-label={`Partner ${i + 1} PAN`}
+                                value={p.pan}
+                                maxLength={10}
+                                pattern="[A-Za-z]{5}[0-9]{4}[A-Za-z]"
+                                title="PAN: five letters, four digits, one letter (e.g. ABCDE1234F)"
+                                required
+                                autoComplete="off"
+                                onChange={(e) =>
+                                  setPartner(i, { pan: e.target.value.toUpperCase() })
+                                }
+                              />
+                            </td>
+                            <td>
+                              <textarea
+                                aria-label={`Partner ${i + 1} residence address`}
+                                value={p.address}
+                                rows={2}
+                                maxLength={500}
+                                required
+                                onChange={(e) => setPartner(i, { address: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="tel"
+                                inputMode="numeric"
+                                aria-label={`Partner ${i + 1} personal mobile number`}
+                                value={p.mobile}
+                                maxLength={10}
+                                pattern="[6-9][0-9]{9}"
+                                title="10-digit Indian mobile number"
+                                required
+                                onChange={(e) =>
+                                  setPartner(i, { mobile: e.target.value.replace(/\D/g, '') })
+                                }
+                              />
+                            </td>
+                            <td>
+                              <input
+                                inputMode="numeric"
+                                aria-label={`Partner ${i + 1} residence pin code`}
+                                value={p.pincode}
+                                maxLength={6}
+                                pattern="[0-9]{6}"
+                                title="6-digit pin code"
+                                required
+                                onChange={(e) =>
+                                  setPartner(i, { pincode: e.target.value.replace(/\D/g, '') })
+                                }
+                              />
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn btn--sm btn--ghost"
+                                aria-label={`Remove partner ${i + 1}`}
+                                onClick={() => removePartner(i)}
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {f.partners.length === 0 && <p className="muted">No partners added yet.</p>}
+                <div className="req__actions">
+                  <button type="button" className="btn btn--sm" onClick={addPartner}>
+                    + Add partner
+                  </button>
+                </div>
+              </section>
+
+              <section className="card">
+                <h2>References</h2>
+                <p className="section-intro">
+                  Give at least two references for the vendor. Every field is required.
+                </p>
+                <div className="partners__scroll">
+                  <table className="partners__tbl partners__tbl--refs">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Contact name</th>
+                        <th>Legal name of the business</th>
+                        <th>Registered address</th>
+                        <th>Contact number</th>
+                        <th>Email ID</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {f.references.map((r, i) => (
+                        <tr key={i}>
+                          <td className="partners__n">{i + 1}</td>
+                          <td>
+                            <input
+                              aria-label={`Reference ${i + 1} contact name`}
+                              value={r.contactName}
+                              maxLength={200}
+                              required
+                              onChange={(e) => setReference(i, { contactName: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              aria-label={`Reference ${i + 1} legal name of the business`}
+                              value={r.businessName}
+                              maxLength={200}
+                              required
+                              onChange={(e) => setReference(i, { businessName: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <textarea
+                              aria-label={`Reference ${i + 1} registered address`}
+                              value={r.registeredAddress}
+                              rows={2}
+                              maxLength={500}
+                              required
+                              onChange={(e) =>
+                                setReference(i, { registeredAddress: e.target.value })
+                              }
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="tel"
+                              aria-label={`Reference ${i + 1} contact number`}
+                              value={r.contactNumber}
+                              maxLength={15}
+                              pattern="[0-9+\-\s()]{7,15}"
+                              title="Enter a valid contact number"
+                              required
+                              onChange={(e) =>
+                                setReference(i, {
+                                  contactNumber: e.target.value.replace(/[^0-9+\-\s()]/g, ''),
+                                })
+                              }
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="email"
+                              aria-label={`Reference ${i + 1} email ID`}
+                              value={r.email}
+                              maxLength={200}
+                              required
+                              onChange={(e) => setReference(i, { email: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn--sm btn--ghost"
+                              aria-label={`Remove reference ${i + 1}`}
+                              disabled={f.references.length <= MIN_REFERENCES}
+                              title={
+                                f.references.length <= MIN_REFERENCES
+                                  ? 'At least two references are required'
+                                  : undefined
+                              }
+                              onClick={() => removeReference(i)}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="req__actions">
+                  <button
+                    type="button"
+                    className="btn btn--sm"
+                    disabled={f.references.length >= 10}
+                    onClick={addReference}
+                  >
+                    + Add reference
+                  </button>
+                  <span className="muted tiny">{f.references.length} added · minimum 2</span>
+                </div>
+              </section>
+              <section className="card">
+                <h2>RC limit</h2>
+                <p className="section-intro">
+                  List the revolving credit (RC) limits the vendor holds with its financers. The
+                  sanction loan limit and the credit limit are worked out for you as the number of
+                  vehicles × {'\u20B9'}
+                  {RC_LIMIT_PER_VEHICLE.toLocaleString('en-IN')}. Leave this empty if there are
+                  none.
+                </p>
+                {f.rcLimits.length > 0 && (
+                  <div className="partners__scroll">
+                    <table className="partners__tbl partners__tbl--rc">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Name of the financer</th>
+                          <th>RC limit (INR)</th>
+                          <th>Number of vehicles</th>
+                          <th>Sanction loan limit amount</th>
+                          <th>Credit limit amount (figures)</th>
+                          <th>Credit limit amount (words)</th>
+                          <th>Remarks</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {f.rcLimits.map((r, i) => {
+                          const d = rcLimitsFromVehicles(
+                            r.numberOfVehicles === '' ? null : Number(r.numberOfVehicles),
+                          );
+                          const inr = (n: number | null) =>
+                            n == null ? '\u2014' : `\u20B9 ${n.toLocaleString('en-IN')}`;
+                          return (
+                            <tr key={i}>
+                              <td className="partners__n">{i + 1}</td>
+                              <td>
+                                <input
+                                  aria-label={`RC limit ${i + 1} name of the financer`}
+                                  value={r.financerName}
+                                  maxLength={200}
+                                  required
+                                  onChange={(e) => setRcLimit(i, { financerName: e.target.value })}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  inputMode="decimal"
+                                  aria-label={`RC limit ${i + 1} amount in rupees`}
+                                  value={r.rcLimit}
+                                  maxLength={16}
+                                  pattern="[0-9]{1,13}(\.[0-9]{1,2})?"
+                                  title="Amount in rupees, up to two decimal places"
+                                  required
+                                  onChange={(e) =>
+                                    setRcLimit(i, {
+                                      rcLimit: e.target.value.replace(/[^0-9.]/g, ''),
+                                    })
+                                  }
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  inputMode="numeric"
+                                  aria-label={`RC limit ${i + 1} number of vehicles`}
+                                  value={r.numberOfVehicles}
+                                  maxLength={6}
+                                  pattern="[1-9][0-9]{0,5}"
+                                  title="Whole number of vehicles, 1 or more"
+                                  required
+                                  onChange={(e) =>
+                                    setRcLimit(i, {
+                                      numberOfVehicles: e.target.value.replace(/\D/g, ''),
+                                    })
+                                  }
+                                />
+                              </td>
+                              <td className="partners__calc" aria-live="polite">
+                                {inr(d.sanctionLoanLimit)}
+                              </td>
+                              <td className="partners__calc" aria-live="polite">
+                                {inr(d.creditLimitFigures)}
+                              </td>
+                              <td className="partners__words" aria-live="polite">
+                                {d.creditLimitWords ?? '\u2014'}
+                              </td>
+                              <td>
+                                <textarea
+                                  aria-label={`RC limit ${i + 1} remarks`}
+                                  value={r.remarks}
+                                  rows={2}
+                                  maxLength={500}
+                                  onChange={(e) => setRcLimit(i, { remarks: e.target.value })}
+                                />
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="btn btn--sm btn--ghost"
+                                  aria-label={`Remove RC limit ${i + 1}`}
+                                  onClick={() => removeRcLimit(i)}
+                                >
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {f.rcLimits.length === 0 && <p className="muted">No RC limits added yet.</p>}
+                <div className="req__actions">
+                  <button
+                    type="button"
+                    className="btn btn--sm"
+                    disabled={f.rcLimits.length >= 20}
+                    onClick={addRcLimit}
+                  >
+                    + Add RC limit
+                  </button>
+                  {f.rcLimits.length > 0 && (
+                    <span className="muted tiny">
+                      Total RC limit: {'\u20B9'}
+                      {f.rcLimits
+                        .reduce((n, r) => n + (Number(r.rcLimit) || 0), 0)
+                        .toLocaleString('en-IN')}
+                    </span>
+                  )}
+                </div>
+              </section>
+
+              <div className="req__actions">
+                <button className="btn btn--ghost" type="button" onClick={() => goTo(1)}>
+                  Back
+                </button>
+                <button className="btn" type="button" onClick={() => goTo(3)}>
+                  Next
+                </button>
+                {draftControls}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div data-step="3" hidden={step !== 3}>
+          {panVerified && (
+            <>
+              <section className="card">
+                <h2>Team structure</h2>
+                <p className="section-intro">
+                  These are the people who support and approve this vendor. Each line is filled in
+                  from the team structure master for your login. To use someone else for this case,
+                  pick their email from the dropdown and their name fills in. The master itself is
+                  not changed.
+                </p>
+                <TeamStructureEditor info={teamInfo} overrides={teamOv} onChange={setTeamOv} />
+              </section>
+
+              <div className="req__actions">
+                <button className="btn btn--ghost" type="button" onClick={() => goTo(2)}>
+                  Back
+                </button>
+                <button className="btn" type="submit" disabled={busy}>
+                  {busy ? 'Submitting…' : kind === 'resubmit' ? 'Resubmit case' : 'Raise case'}
+                </button>
+                {draftControls}
+              </div>
+            </>
+          )}
+        </div>
       </form>
     </main>
   );

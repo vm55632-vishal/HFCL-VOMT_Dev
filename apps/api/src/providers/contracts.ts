@@ -1,3 +1,4 @@
+import type { KycCheckKey } from '@vop/shared';
 /**
  * Provider contracts. Every external concern is reached only through one of these interfaces;
  * the concrete adapter is chosen at boot from config (ADR-0002). Application code depends on the
@@ -13,6 +14,7 @@ export const QUEUE_PROVIDER = Symbol('QueueProvider');
 export const SCAN_PROVIDER = Symbol('ScanProvider');
 export const KEY_PROVIDER = Symbol('KeyProvider');
 export const VERIFICATION_PROVIDER = Symbol('VerificationProvider');
+export const KYC_PROVIDER = Symbol('KycProvider');
 
 // --- Object storage ---
 export interface StorageProvider {
@@ -86,4 +88,26 @@ export interface VerificationProvider {
   mca(input: { registration: string }): Promise<VerificationResult>;
   bank(input: { account: string; ifsc: string; name?: string }): Promise<VerificationResult>;
   udyam(input: { udyam: string }): Promise<VerificationResult>;
+}
+
+// --- KYC & risk checks on the authorised signatory (Digi KYC, Hunter, IXSite, CRIF / CIBIL) ---
+// The live provider's API is not confirmed, so only this interface and a mock exist today; a real
+// adapter is added behind it without touching the service or the UI.
+export interface KycSubject {
+  name: string;
+  pan: string;
+  mobile?: string;
+  email?: string;
+}
+export type KycRunStatus = 'in_progress' | 'passed' | 'failed';
+export interface KycCheckResult {
+  status: KycRunStatus;
+  summary?: string;
+}
+export interface KycProvider {
+  readonly name: string;
+  /** Start one check for the subject; returns the provider's reference for polling. */
+  start(check: KycCheckKey, subject: KycSubject): Promise<{ ref: string }>;
+  /** Current state of a started check. */
+  poll(check: KycCheckKey, ref: string): Promise<KycCheckResult>;
 }

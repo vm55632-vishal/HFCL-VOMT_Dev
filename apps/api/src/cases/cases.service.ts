@@ -1,7 +1,10 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
+  Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -13,6 +16,7 @@ import {
   getStage,
   maskAccount,
   maskPan,
+  rcLimitsFromVehicles,
   newId,
   PERMISSIONS,
   activeReviewStages,
@@ -25,6 +29,7 @@ import {
   type WorkflowAction,
 } from '@vop/shared';
 import { Prisma } from '@prisma/client';
+import { TtlCache } from '../common/ttl-cache';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { FieldEncryptionService } from '../crypto/field-encryption.service';
@@ -38,13 +43,173 @@ import {
   type VerificationKind,
 } from '../verification/verification-cache.service';
 import type { AuthUser } from '../auth/auth-user';
+import { TeamStructureService, TEAM_FIELDS, type TeamOverrides } from './team-structure.service';
+import { STORAGE_PROVIDER, type StorageProvider } from '../providers/contracts';
 
 /** Workflow stage key -> the Prisma delegate for its per-stage reporting table. */
 const STAGE_TABLES = ['draft', 'infosec', 'fcu', 'operation', 'sap', 'legal'] as const;
 type StageTable = (typeof STAGE_TABLES)[number];
 
+/**
+ * Prisma's `contains` does not escape SQL LIKE wildcards, so a typed `%` or `_` would match
+ * everything / any character. Escape them (and the escape character) so search text is literal.
+ */
+export function likeEscape(text: string): string {
+  return text.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/** Document type for the final FCU due-diligence report (uploaded through the documents API). */
+export const FCU_REPORT_DOC_TYPE = 'fcu_dd_report';
+
+/** What the FCU records on its review screen. */
+export interface FcuFindings {
+  residentialAddressCheck: boolean;
+  officeAddressCheck: boolean;
+  overallFinding: 'positive' | 'negative';
+  comment?: string;
+}
+
+/** Stage-specific data stored in the per-stage table's JSON column. */
+function stageData(
+  stageKey: string,
+  extra?: { agreement?: string; fcu?: FcuFindings },
+): Prisma.InputJsonValue | undefined {
+  if (stageKey === 'legal' && extra?.agreement) return { agreement: extra.agreement.trim() };
+  if (stageKey === 'fcu' && extra?.fcu) {
+    return {
+      residentialAddressCheck: extra.fcu.residentialAddressCheck,
+      officeAddressCheck: extra.fcu.officeAddressCheck,
+      overallFinding: extra.fcu.overallFinding,
+      comment: extra.fcu.comment?.trim() || null,
+    };
+  }
+  return undefined;
+}
+
+interface CapturedResponse {
+  kind: string;
+  payloadEnc: string;
+  verified: boolean;
+  status: string | null;
+}
+
+/** Strip identifiers a reviewer doesn't need from a captured registry response. */
+export function sanitiseRegistry(
+  kind: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...payload };
+  delete out.pan; // never expose the full PAN number
+  delete out.cached;
+  const details = payload.details as Record<string, unknown> | undefined;
+  if (kind === 'bank' && details) {
+    const acct = String(details.accountNumber ?? '');
+    const { bankRRN: _rrn, message: _msg, accountNumber: _acct, ...rest } = details;
+    void _rrn;
+    void _msg;
+    void _acct;
+    out.details = { ...rest, accountNumber: acct ? '••••' + acct.slice(-4) : undefined };
+  }
+  if (kind === 'pan' && payload.fields) {
+    const {
+      dob: _d,
+      gender: _g,
+      maskedAadhaar: _m,
+      ...fields
+    } = payload.fields as Record<string, unknown>;
+    void _d;
+    void _g;
+    void _m;
+    out.fields = fields;
+  }
+  return out;
+}
+
+interface PartnerRow {
+  id: string;
+  name: string;
+  dobEnc: string;
+  maritalStatus: string;
+  gender: string;
+  fatherName: string;
+  spouseName: string | null;
+  panEnc: string;
+  residenceAddressEnc: string;
+  mobileEnc: string;
+  pincode: string;
+}
+
+/** Stages a case ends in. It leaves every queue once it reaches one of these. */
+const CLOSED_STAGES = ['approved', 'rejected', 'cancelled'];
+
+export const BULK_ACTIONS = ['hold', 'resume', 'cancel', 'reopen', 'delete'] as const;
+export type BulkAction = (typeof BULK_ACTIONS)[number];
+
+/** The human-readable message inside a Nest HTTP exception (string, or { message: string | string[] }). */
+function httpMessage(e: HttpException): string {
+  const r = e.getResponse();
+  if (typeof r === 'string') return r;
+  const m = (r as { message?: unknown }).message;
+  return Array.isArray(m) ? m.join(' ') : typeof m === 'string' ? m : e.message;
+}
+
+export interface PartnerInput {
+  name: string;
+  dob: string; // YYYY-MM-DD
+  maritalStatus: string;
+  gender: string;
+  fatherName: string;
+  spouseName?: string;
+  pan: string;
+  address: string;
+  mobile: string;
+  pincode: string;
+}
+
+export interface ReferenceInput {
+  contactName: string;
+  businessName: string;
+  registeredAddress: string;
+  contactNumber: string;
+  email: string;
+}
+interface ReferenceRow extends ReferenceInput {
+  id: string;
+}
+
+export interface RcLimitInput {
+  financerName: string;
+  rcLimit: number | null;
+  numberOfVehicles: number | null;
+  remarks?: string;
+}
+interface RcLimitRow {
+  id: string;
+  financerName: string;
+  rcLimit: { toString(): string } | null;
+  numberOfVehicles: number | null;
+  sanctionLoanLimit: { toString(): string } | null;
+  creditLimitFigures: { toString(): string } | null;
+  creditLimitWords: string | null;
+  remarks: string | null;
+}
+
+export type DraftPartnerInput = Partial<PartnerInput>;
+/** A work-in-progress case: only the category is required; everything else may be blank or partial. */
+export type DraftInput = Omit<Partial<CaseCreateInput>, 'partners' | 'references' | 'rcLimits'> & {
+  categoryKey: string;
+  partners?: DraftPartnerInput[];
+  references?: Partial<ReferenceInput>[];
+  rcLimits?: Partial<RcLimitInput>[];
+};
+
 export interface CaseCreateInput {
   categoryKey: string;
+  partners?: PartnerInput[];
+  references?: ReferenceInput[];
+  rcLimits?: RcLimitInput[];
+  /** Team-structure fields the proposer changed from the master (applied on the server). */
+  teamOverrides?: TeamOverrides;
   subCategoryKey?: string;
   legalName: string;
   tradeName?: string;
@@ -97,6 +262,10 @@ export interface DuplicateFlag {
 
 @Injectable()
 export class CasesService {
+  // Sub-category display names (a tiny, slow-changing table) for the case list, cached briefly so
+  // listing cases doesn't pay an extra database round trip.
+  private readonly subCategoryNames = new TtlCache<Map<string, string>>(30_000);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
@@ -107,7 +276,11 @@ export class CasesService {
     private readonly erp: ErpService,
     private readonly notifications: NotificationsService,
     private readonly verificationCache: VerificationCacheService,
+    private readonly team: TeamStructureService,
+    @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
   ) {}
+
+  private readonly logger = new Logger(CasesService.name);
 
   // ---------- helpers ----------
 
@@ -127,11 +300,14 @@ export class CasesService {
     };
   }
 
-  private async nextRef(now = new Date()): Promise<string> {
-    const ym = `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-    const prefix = `VOM-${ym}-`;
-    const count = await this.prisma.case.count({ where: { ref: { startsWith: prefix } } });
-    return `${prefix}${String(count + 1).padStart(4, '0')}`;
+  /**
+   * Next case reference: VOMT- plus a six-digit running number (VOMT-000001, VOMT-000002, ...). The
+   * number comes from a database sequence, so it is never handed out twice, even when the newest
+   * case has been deleted (the audit log would otherwise show one ID for two different cases).
+   */
+  private async nextRef(): Promise<string> {
+    const rows = await this.prisma.$queryRaw<{ n: bigint }[]>`SELECT nextval('case_ref_seq') AS n`;
+    return `VOMT-${String(Number(rows[0]?.n ?? 1)).padStart(6, '0')}`;
   }
 
   private canSeeAll(actor: AuthUser): boolean {
@@ -145,6 +321,73 @@ export class CasesService {
     if (this.canSeeAll(actor)) return;
     if (c.createdById === actor.id || c.assigneeId === actor.id) return;
     throw new ForbiddenException('Not authorized to view this case.');
+  }
+
+  /** Reject a sub-category that doesn't belong to the chosen category (no-op when none given). */
+  private async assertSubCategory(input: { categoryKey: string; subCategoryKey?: string }) {
+    if (!input.subCategoryKey) return;
+    const sc = await this.prisma.vendorSubCategory.findUnique({
+      where: { key: input.subCategoryKey },
+    });
+    if (!sc || sc.categoryKey !== input.categoryKey) {
+      throw new BadRequestException('Invalid sub-category for the selected category.');
+    }
+  }
+
+  /** Rows for rc_limits (nested under the case). */
+  private buildRcLimitRows(rows?: Partial<RcLimitInput>[]) {
+    return (rows ?? []).map((r, i) => {
+      // The sanction / credit limits are derived from the vehicle count, never trusted from the client.
+      const d = rcLimitsFromVehicles(r.numberOfVehicles);
+      return {
+        id: newId(),
+        position: i,
+        financerName: (r.financerName ?? '').trim(),
+        rcLimit: r.rcLimit ?? null,
+        numberOfVehicles: r.numberOfVehicles ?? null,
+        sanctionLoanLimit: d.sanctionLoanLimit,
+        creditLimitFigures: d.creditLimitFigures,
+        creditLimitWords: d.creditLimitWords,
+        remarks: r.remarks?.trim() || null,
+      };
+    });
+  }
+
+  /** Rows for vendor_references (nested under the case). Plain text, like the other contact details. */
+  private buildReferenceRows(refs?: Partial<ReferenceInput>[]) {
+    return (refs ?? []).map((r, i) => ({
+      id: newId(),
+      position: i,
+      contactName: (r.contactName ?? '').trim(),
+      businessName: (r.businessName ?? '').trim(),
+      registeredAddress: (r.registeredAddress ?? '').trim(),
+      contactNumber: (r.contactNumber ?? '').trim(),
+      email: (r.email ?? '').trim(),
+    }));
+  }
+
+  /** Rows for partner_details (nested under the case). DOB, PAN, address and mobile are encrypted. */
+  private async buildPartnerRows(partners?: DraftPartnerInput[]) {
+    return Promise.all(
+      (partners ?? []).map(async (p, i) => {
+        const pan = (p.pan ?? '').trim().toUpperCase();
+        return {
+          id: newId(),
+          position: i,
+          name: (p.name ?? '').trim(),
+          maritalStatus: p.maritalStatus ?? '',
+          gender: p.gender ?? '',
+          fatherName: (p.fatherName ?? '').trim(),
+          spouseName: p.spouseName?.trim() || null,
+          pincode: p.pincode ?? '',
+          dobEnc: await this.crypto.encryptToString(p.dob ?? ''),
+          panEnc: await this.crypto.encryptToString(pan),
+          panBlindIndex: pan ? this.blind.index(pan) : '',
+          residenceAddressEnc: await this.crypto.encryptToString((p.address ?? '').trim()),
+          mobileEnc: await this.crypto.encryptToString(p.mobile ?? ''),
+        };
+      }),
+    );
   }
 
   /** Build the vendor master-detail row (case_general) from intake input, encrypting identifiers. */
@@ -320,16 +563,18 @@ export class CasesService {
         /* best-effort capture; never blocks case creation */
       }
     };
+    // Independent lookups + upserts: run them concurrently instead of one after another.
+    const jobs: Promise<void>[] = [];
     if (ids.pan) {
-      await save('pan', ids.pan, ids.pan);
-      await save('msme', ids.pan, ids.pan);
+      jobs.push(save('pan', ids.pan, ids.pan), save('msme', ids.pan, ids.pan));
     }
-    if (ids.gstin) await save('gst', ids.gstin, ids.gstin);
+    if (ids.gstin) jobs.push(save('gst', ids.gstin, ids.gstin));
     if (ids.bankAccount && ids.ifsc) {
       const acct = ids.bankAccount.replace(/\s+/g, '');
       const ifsc = ids.ifsc.trim().toUpperCase();
-      await save('bank', ids.bankAccount, `${acct}|${ifsc}`);
+      jobs.push(save('bank', ids.bankAccount, `${acct}|${ifsc}`));
     }
+    await Promise.all(jobs);
   }
 
   /**
@@ -343,6 +588,19 @@ export class CasesService {
   ): Promise<Record<string, unknown>> {
     const reveal = actor.permissions.has(PERMISSIONS.VendorViewSensitive);
     const g = (c.general ?? {}) as Record<string, unknown>;
+    const partnerRows = (c.partners as PartnerRow[] | undefined) ?? [];
+    // Revealing sensitive fields is audited, but the write is not on the page's critical path: it is
+    // five database round trips, and a viewer should not wait for them. It finishes in the
+    // background (failures are logged, and the next open tries again). Every change to a case is
+    // still audited before it completes.
+    if (reveal && g.panEnc) {
+      void this.auditSensitiveView(actor, c.id as string, partnerRows.length > 0).catch(
+        (e: unknown) =>
+          this.logger.error(
+            `Could not record a sensitive view of case ${String(c.ref)}: ${(e as Error).message}`,
+          ),
+      );
+    }
     // Flatten general under the case: case fields (id/createdAt/updatedAt/stage/…) win over
     // general's own id/timestamps.
     const out: Record<string, unknown> = { ...g, ...c };
@@ -372,18 +630,46 @@ export class CasesService {
           .filter((v): v is string => !!v),
       ),
     ];
-    if (actorIds.length) {
-      const users = await this.prisma.user.findMany({
-        where: { id: { in: actorIds } },
-        select: { id: true, name: true },
-      });
-      const nameById = new Map(users.map((u) => [u.id, u.name]));
-      for (const s of Object.values(stages)) {
-        if (s?.actionedById) s.actionedByName = nameById.get(s.actionedById as string) ?? null;
-      }
-    }
+    const namesDone: Promise<void> = actorIds.length
+      ? this.prisma.user
+          .findMany({ where: { id: { in: actorIds } }, select: { id: true, name: true } })
+          .then((users) => {
+            const nameById = new Map(users.map((u) => [u.id, u.name]));
+            for (const s of Object.values(stages)) {
+              if (s?.actionedById) {
+                s.actionedByName = nameById.get(s.actionedById as string) ?? null;
+              }
+            }
+          })
+      : Promise.resolve();
+    namesDone.catch(() => undefined);
     out.stages = stages;
     out.reviewStages = activeReviewStages(Boolean(c.infosecRequired));
+
+    // Registry results captured when the vendor was entered (PAN / GST / bank / MSME), decrypted
+    // for the "full details" view. Data minimisation: the full PAN number, Aadhaar details and the
+    // bank reference are dropped, and the bank account number is masked.
+    const captured = (c.responses as CapturedResponse[] | undefined) ?? [];
+    const registry: Record<string, unknown> = {};
+    await Promise.all(
+      captured.map(async (r) => {
+        try {
+          const payload = JSON.parse(await this.crypto.decryptFromString(r.payloadEnc)) as Record<
+            string,
+            unknown
+          >;
+          registry[r.kind] = {
+            verified: r.verified,
+            status: r.status,
+            ...sanitiseRegistry(r.kind, payload),
+          };
+        } catch {
+          /* an undecryptable payload is simply omitted */
+        }
+      }),
+    );
+    delete out.responses;
+    out.registry = registry;
     delete out.panEnc;
     delete out.panBlindIndex;
     delete out.bankAccountEnc;
@@ -392,17 +678,13 @@ export class CasesService {
     delete out.signatoryPanEnc;
     delete out.signatoryPanBlindIndex;
 
+    // PAN, bank account and signatory PAN are revealed only to viewers holding VendorViewSensitive
+    // (granted to the proposer and the review roles); everyone else sees the masked form. Every
+    // reveal is audited. Values stay encrypted at rest and masked in logs/exports regardless.
     if (reveal && g.panEnc) {
       const pan = await this.crypto.decryptFromString(g.panEnc as string);
       out.pan = pan;
       out.panMasked = maskPan(pan);
-      await this.audit.append({
-        action: 'case.view_sensitive',
-        entityType: 'Case',
-        entityId: c.id as string,
-        actorId: actor.id,
-        detail: { field: 'pan' },
-      });
     } else {
       out.pan = g.panEnc ? '••••••••••' : null;
     }
@@ -411,6 +693,55 @@ export class CasesService {
     } else {
       out.bankAccount = g.bankAccountEnc ? maskAccount('0000') : null;
     }
+    // Management structure: full details only for viewers allowed to see sensitive data; everyone
+    // else gets just name / gender / marital status with the PAN masked (the rest is personal data).
+    out.partners = await Promise.all(
+      partnerRows.map(async (p) =>
+        reveal
+          ? {
+              id: p.id,
+              name: p.name,
+              dob: await this.crypto.decryptFromString(p.dobEnc),
+              maritalStatus: p.maritalStatus,
+              gender: p.gender,
+              fatherName: p.fatherName,
+              spouseName: p.spouseName,
+              pan: await this.crypto.decryptFromString(p.panEnc),
+              address: await this.crypto.decryptFromString(p.residenceAddressEnc),
+              mobile: await this.crypto.decryptFromString(p.mobileEnc),
+              pincode: p.pincode,
+            }
+          : {
+              id: p.id,
+              name: p.name,
+              gender: p.gender,
+              maritalStatus: p.maritalStatus,
+              pan: '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022',
+            },
+      ),
+    );
+    out.references = ((c.vendorReferences as ReferenceRow[] | undefined) ?? []).map((r) => ({
+      id: r.id,
+      contactName: r.contactName,
+      businessName: r.businessName,
+      registeredAddress: r.registeredAddress,
+      contactNumber: r.contactNumber,
+      email: r.email,
+    }));
+    delete out.vendorReferences;
+    const ts = c.teamStructure as Record<string, unknown> | null | undefined;
+    out.teamStructure = ts ? Object.fromEntries(TEAM_FIELDS.map((k) => [k, ts[k] ?? ''])) : null;
+    out.teamOverriddenFields = (ts?.overriddenFields as string[] | null | undefined) ?? [];
+    out.rcLimits = ((c.rcLimits as RcLimitRow[] | undefined) ?? []).map((r) => ({
+      id: r.id,
+      financerName: r.financerName,
+      rcLimit: r.rcLimit == null ? '' : r.rcLimit.toString(),
+      numberOfVehicles: r.numberOfVehicles == null ? '' : String(r.numberOfVehicles),
+      sanctionLoanLimit: r.sanctionLoanLimit == null ? '' : r.sanctionLoanLimit.toString(),
+      creditLimitFigures: r.creditLimitFigures == null ? '' : r.creditLimitFigures.toString(),
+      creditLimitWords: r.creditLimitWords ?? '',
+      remarks: r.remarks ?? '',
+    }));
     if (reveal && g.signatoryPanEnc) {
       const sp = await this.crypto.decryptFromString(g.signatoryPanEnc as string);
       out.signatoryPan = sp;
@@ -418,7 +749,37 @@ export class CasesService {
     } else {
       out.signatoryPan = g.signatoryPanEnc ? '••••••••••' : null;
     }
+    await namesDone;
     return out;
+  }
+
+  /**
+   * Record that a viewer saw a case's sensitive fields. One entry per viewer and case in any five
+   * minutes: opening the same case again, or moving between its tabs, is the same viewing session.
+   */
+  private readonly sensitiveViews = new Map<string, number>();
+  private async auditSensitiveView(actor: AuthUser, caseId: string, partners: boolean) {
+    const key = `${actor.id}:${caseId}`;
+    const now = Date.now();
+    const seen = this.sensitiveViews.get(key);
+    if (seen !== undefined && now - seen < 5 * 60_000) return;
+    this.sensitiveViews.set(key, now); // set first, so two overlapping opens write one entry
+    if (this.sensitiveViews.size > 5000) {
+      for (const [k, t] of this.sensitiveViews)
+        if (now - t >= 5 * 60_000) this.sensitiveViews.delete(k);
+    }
+    try {
+      await this.audit.append({
+        action: 'case.view_sensitive',
+        entityType: 'Case',
+        entityId: caseId,
+        actorId: actor.id,
+        detail: { field: 'pan', ...(partners ? { partners: true } : {}) },
+      });
+    } catch (e) {
+      this.sensitiveViews.delete(key); // not recorded, so the next open must try again
+      throw e;
+    }
   }
 
   /** Find existing cases sharing PAN / GSTIN / bank / email / phone (flag, never block). */
@@ -472,26 +833,33 @@ export class CasesService {
   // ---------- lifecycle ----------
 
   async create(actor: AuthUser, input: CaseCreateInput) {
-    const category = await this.categories.get(input.categoryKey);
-    if (input.subCategoryKey) {
-      const sc = await this.prisma.vendorSubCategory.findUnique({
-        where: { key: input.subCategoryKey },
-      });
-      if (!sc || sc.categoryKey !== input.categoryKey) {
-        throw new BadRequestException('Invalid sub-category for the selected category.');
-      }
-    }
+    const panIdx = input.pan ? this.blind.index(input.pan) : null;
+    const gstIdx = input.gstin ? this.blind.index(input.gstin) : null;
+    const bankIdx = input.bankAccount ? this.blind.index(input.bankAccount) : null;
+    const id = newId();
+
+    // Phase A — independent lookups run in parallel. Against a remote database every query is a
+    // network round trip, so doing these one after another was the main cause of slow submits.
+    const [category, , ref, generalData, partnerRows, teamRow, duplicates] = await Promise.all([
+      this.categories.get(input.categoryKey),
+      this.assertSubCategory(input),
+      this.nextRef(),
+      this.buildGeneralData(input),
+      this.buildPartnerRows(input.partners),
+      this.team.resolve(actor, input.teamOverrides),
+      // The new case doesn't exist yet, so it can't match itself — no exclusion needed.
+      this.detectDuplicates({
+        pan: panIdx,
+        gstin: gstIdx,
+        bank: bankIdx,
+        email: input.contactEmail,
+        phone: input.contactPhone,
+      }),
+    ]);
     const published = await this.workflows.getPublished(category.workflowKey);
 
     const risk = assessRisk(this.riskInputFrom(input, category.enhancedDueDiligence));
     const tier = risk.tier;
-
-    const panIdx = input.pan ? this.blind.index(input.pan) : null;
-    const gstIdx = input.gstin ? this.blind.index(input.gstin) : null;
-    const bankIdx = input.bankAccount ? this.blind.index(input.bankAccount) : null;
-
-    const id = newId();
-    const ref = await this.nextRef();
     const pack = dueDiligencePack(risk, this.riskInputFrom(input, category.enhancedDueDiligence));
 
     // Information-security questionnaire: any "yes" adds InfoSec to the parallel review set.
@@ -507,85 +875,90 @@ export class CasesService {
     // Submitting the case fans it out to the parallel reviewers (FCU/Operation/Legal, + InfoSec
     // when flagged). The case sits in the "review" phase until every active stage is approved.
     const stages = activeReviewStages(infosecRequired);
-    const generalData = await this.buildGeneralData(input);
 
-    await this.prisma.case.create({
-      data: {
-        id,
-        ref,
-        categoryKey: input.categoryKey,
-        subCategoryKey: input.subCategoryKey ?? null,
-        workflowKey: published.key,
-        workflowVersion: published.version,
-        stage: 'review',
-        tier,
-        riskScore: risk.score,
-        createdById: actor.id,
-        lastUpdatedById: actor.id,
-        infosecRequired,
-        general: {
-          create: { id: newId(), ...generalData } as Prisma.CaseGeneralCreateWithoutCaseInput,
-        },
-        checklist: {
-          create: pack.map((it) => ({
-            id: newId(),
-            itemId: it.id,
-            label: it.label,
-            role: it.role,
-          })),
-        },
-        activity: {
-          create: [
-            { id: newId(), actorId: actor.id, action: 'created', toStage: 'review' },
-            {
+    // Phase B — the case, its vendor detail, checklist and activity in one atomic transaction.
+    // The audit entry starts in parallel (lock + previous hash) and is written only once this
+    // commits, so its round trips overlap the insert instead of following it.
+    const caseCreated = Promise.resolve(
+      this.prisma.case.create({
+        data: {
+          id,
+          ref,
+          categoryKey: input.categoryKey,
+          subCategoryKey: input.subCategoryKey ?? null,
+          workflowKey: published.key,
+          workflowVersion: published.version,
+          stage: 'review',
+          tier,
+          riskScore: risk.score,
+          createdById: actor.id,
+          lastUpdatedById: actor.id,
+          infosecRequired,
+          general: {
+            create: { id: newId(), ...generalData } as Prisma.CaseGeneralCreateWithoutCaseInput,
+          },
+          partners: { create: partnerRows },
+          vendorReferences: { create: this.buildReferenceRows(input.references) },
+          rcLimits: { create: this.buildRcLimitRows(input.rcLimits) },
+          ...(teamRow ? { teamStructure: { create: { id: newId(), ...teamRow } } } : {}),
+          checklist: {
+            create: pack.map((it) => ({
               id: newId(),
-              actorId: actor.id,
-              action: 'submitted_for_review',
-              toStage: 'review',
-              note: `Parallel review opened: ${stages.join(', ')}.`,
-            },
-          ],
+              itemId: it.id,
+              label: it.label,
+              role: it.role,
+            })),
+          },
+          activity: {
+            create: [
+              { id: newId(), actorId: actor.id, action: 'created', toStage: 'review' },
+              {
+                id: newId(),
+                actorId: actor.id,
+                action: 'submitted_for_review',
+                toStage: 'review',
+                note: `Parallel review opened: ${stages.join(', ')}.`,
+              },
+            ],
+          },
         },
-      },
-    });
-
-    // Open each active parallel stage, seed the (gated) SAP confirmation row, and persist the
-    // PAN/GST/bank/MSME responses shown on the form.
-    for (const s of stages) {
-      await this.writeStage(id, s, { status: 'pending', enteredAt: new Date() });
-    }
-    await this.writeStage(id, SAP_STAGE, { status: 'waiting' });
-    await this.captureResponses(id, actor, {
-      pan: input.pan,
-      gstin: input.gstin,
-      bankAccount: input.bankAccount,
-      ifsc: input.ifsc,
-    });
-
-    const duplicates = await this.detectDuplicates(
-      {
-        pan: panIdx,
-        gstin: gstIdx,
-        bank: bankIdx,
-        email: input.contactEmail,
-        phone: input.contactPhone,
-      },
-      id,
+      }),
     );
 
-    await this.audit.append({
-      action: 'case.create',
-      entityType: 'Case',
-      entityId: id,
-      actorId: actor.id,
-      detail: {
-        ref,
-        tier,
-        category: input.categoryKey,
-        duplicateFlags: duplicates.length,
-        infosecRequired,
+    const auditWritten = this.audit.append(
+      {
+        action: 'case.create',
+        entityType: 'Case',
+        entityId: id,
+        actorId: actor.id,
+        detail: {
+          ref,
+          tier,
+          category: input.categoryKey,
+          duplicateFlags: duplicates.length,
+          infosecRequired,
+          teamOverridden: teamRow.overriddenFields,
+        },
       },
-    });
+      { after: caseCreated },
+    );
+    auditWritten.catch(() => undefined); // surfaced below if the case itself succeeded
+    await caseCreated;
+
+    // Phase C — open each active parallel stage, seed the (gated) SAP row, and persist the
+    // PAN/GST/bank/MSME responses shown on the form, in parallel with finishing the audit entry.
+    const openedAt = new Date();
+    await Promise.all([
+      ...stages.map((s) => this.writeStage(id, s, { status: 'pending', enteredAt: openedAt })),
+      this.writeStage(id, SAP_STAGE, { status: 'waiting' }),
+      this.captureResponses(id, actor, {
+        pan: input.pan,
+        gstin: input.gstin,
+        bankAccount: input.bankAccount,
+        ifsc: input.ifsc,
+      }),
+      auditWritten,
+    ]);
 
     return {
       id,
@@ -644,10 +1017,19 @@ export class CasesService {
     stageKey: ReviewStage,
     decision: 'approve' | 'reject' | 'sendback',
     note?: string,
-    extra?: { agreement?: string },
+    extra?: { agreement?: string; fcu?: FcuFindings },
   ) {
     if (!REVIEW_STAGES.includes(stageKey)) throw new BadRequestException('Unknown review stage.');
-    const c = await this.prisma.case.findUnique({ where: { id } });
+    // The case, this stage's row and (for FCU) the uploaded report are independent reads.
+    const [c, current, fcuReports] = await Promise.all([
+      this.prisma.case.findUnique({ where: { id } }),
+      this.readStage(id, stageKey),
+      stageKey === 'fcu' && decision === 'approve'
+        ? this.prisma.document.count({
+            where: { caseId: id, docType: FCU_REPORT_DOC_TYPE, status: 'CLEAN' },
+          })
+        : Promise.resolve(0),
+    ]);
     if (!c) throw new NotFoundException('Case not found.');
 
     const owns =
@@ -655,42 +1037,66 @@ export class CasesService {
       actor.permissions.has(PERMISSIONS.WorkflowManage);
     if (!owns) throw new ForbiddenException(`Only the ${stageKey} reviewer can act on this stage.`);
 
+    if (CLOSED_STAGES.includes(c.stage)) {
+      throw new BadRequestException('This case is closed, so it can no longer be reviewed.');
+    }
+    if (c.onHold) {
+      throw new BadRequestException(
+        'This case is on hold. It has to be resumed before it can be reviewed.',
+      );
+    }
     const active = this.activeStagesFor(c);
     if (!active.includes(stageKey)) {
       throw new BadRequestException('This stage is not part of this case’s review.');
     }
-    const current = await this.readStage(id, stageKey);
     if (!current || current.status !== 'pending') {
       throw new BadRequestException('This stage is not awaiting your review.');
     }
     if ((decision === 'reject' || decision === 'sendback') && !note?.trim()) {
       throw new BadRequestException('A remark is required to reject or send back a stage.');
     }
+    // FCU can only be approved with its findings recorded and the final DD report uploaded.
+    if (stageKey === 'fcu' && decision === 'approve') {
+      if (!extra?.fcu) {
+        throw new BadRequestException(
+          'Record the FCU findings (address checks and overall finding) before approving.',
+        );
+      }
+      if (fcuReports === 0) {
+        throw new BadRequestException(
+          'Upload the final FCU due-diligence report before approving.',
+        );
+      }
+    }
 
     const status =
       decision === 'approve' ? 'approved' : decision === 'reject' ? 'rejected' : 'sent_back';
-    await this.writeStage(id, stageKey, {
-      status,
-      decision,
-      remark: note?.trim() || null,
-      actionedById: actor.id,
-      completedAt: new Date(),
-      ...(extra?.agreement ? { data: { agreement: extra.agreement.trim() } } : {}),
-    });
+    // Record the decision and the activity entry together.
+    await Promise.all([
+      this.writeStage(id, stageKey, {
+        status,
+        decision,
+        remark: note?.trim() || null,
+        actionedById: actor.id,
+        completedAt: new Date(),
+        ...(stageData(stageKey, extra) ? { data: stageData(stageKey, extra) } : {}),
+      }),
+      this.prisma.caseActivity.create({
+        data: {
+          id: newId(),
+          caseId: id,
+          actorId: actor.id,
+          action: `${stageKey}_${decision}`,
+          fromStage: stageKey,
+          toStage: decision === 'sendback' ? 'draft' : 'review',
+          note: note?.trim() || null,
+        },
+      }),
+    ]);
 
-    await this.prisma.caseActivity.create({
-      data: {
-        id: newId(),
-        caseId: id,
-        actorId: actor.id,
-        action: `${stageKey}_${decision}`,
-        fromStage: stageKey,
-        toStage: decision === 'sendback' ? 'draft' : 'review',
-        note: note?.trim() || null,
-      },
-    });
-
-    // Recompute the overall phase from the active stages.
+    // Recompute the overall phase from the active stages. This must read AFTER our own write
+    // (above): if two reviewers act at once, the later reader then sees both decisions, so the case
+    // can never stall in "review" with every stage approved.
     const statuses = await this.stageStatuses(id, active);
     let phase = c.stage;
     if (Object.values(statuses).some((s) => s === 'rejected')) {
@@ -700,22 +1106,36 @@ export class CasesService {
       phase = 'review';
     } else if (active.every((s) => statuses[s] === 'approved')) {
       phase = SAP_STAGE; // all reviews done -> SAP confirmation gate
-      await this.writeStage(id, SAP_STAGE, { status: 'pending', enteredAt: new Date() });
     } else {
       phase = 'review';
     }
-    await this.prisma.case.update({
-      where: { id },
-      data: { stage: phase, lastUpdatedById: actor.id },
-    });
 
-    await this.audit.append({
-      action: `case.stage_${decision}`,
-      entityType: 'Case',
-      entityId: id,
-      actorId: actor.id,
-      detail: { ref: c.ref, stage: stageKey, decision, phase },
-    });
+    // Move the case, open the SAP row (if now due) and write the audit entry together; the audit
+    // transaction starts alongside and is committed only once the case update succeeds.
+    const caseUpdated = Promise.resolve(
+      this.prisma.case.update({
+        where: { id },
+        data: { stage: phase, lastUpdatedById: actor.id },
+      }),
+    );
+    const audited = this.audit.append(
+      {
+        action: `case.stage_${decision}`,
+        entityType: 'Case',
+        entityId: id,
+        actorId: actor.id,
+        detail: { ref: c.ref, stage: stageKey, decision, phase },
+      },
+      { after: caseUpdated },
+    );
+    audited.catch(() => undefined);
+    await Promise.all([
+      caseUpdated,
+      phase === SAP_STAGE
+        ? this.writeStage(id, SAP_STAGE, { status: 'pending', enteredAt: new Date() })
+        : Promise.resolve(),
+      audited,
+    ]);
     return { ok: true, stage: stageKey, status, phase };
   }
 
@@ -743,6 +1163,11 @@ export class CasesService {
     if (!owns) throw new ForbiddenException('Only the SAP confirmation role can act here.');
     if (c.stage !== SAP_STAGE) {
       throw new BadRequestException('This case has not reached SAP confirmation.');
+    }
+    if (c.onHold) {
+      throw new BadRequestException(
+        'This case is on hold. It has to be resumed before it can be confirmed.',
+      );
     }
     if (decision === 'reject' && !note?.trim()) {
       throw new BadRequestException('A remark is required to reject at SAP confirmation.');
@@ -794,6 +1219,427 @@ export class CasesService {
     return { ok: true, phase };
   }
 
+  // ---------- bulk actions from the case list ----------
+
+  /**
+   * Apply one action to several cases. Each case is checked and changed on its own, so one refusal
+   * never blocks the rest; the result says which cases changed and why any did not. Done one at a
+   * time because every change writes an audit entry and the audit log is a hash chain.
+   */
+  async bulk(actor: AuthUser, action: BulkAction, ids: string[], note?: string) {
+    const results: { id: string; ref: string | null; ok: boolean; message?: string }[] = [];
+    for (const id of [...new Set(ids)]) {
+      try {
+        results.push({ id, ref: await this.bulkOne(actor, action, id, note), ok: true });
+      } catch (e) {
+        results.push({
+          id,
+          ref: null,
+          ok: false,
+          message: e instanceof HttpException ? httpMessage(e) : 'This case could not be updated.',
+        });
+      }
+    }
+    const succeeded = results.filter((r) => r.ok).length;
+    return { action, results, succeeded, failed: results.length - succeeded };
+  }
+
+  private async bulkOne(actor: AuthUser, action: BulkAction, id: string, note?: string) {
+    const c = await this.prisma.case.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        ref: true,
+        stage: true,
+        onHold: true,
+        createdById: true,
+        assigneeId: true,
+        infosecRequired: true,
+        erpRef: true,
+      },
+    });
+    // A draft is private to its proposer.
+    if (!c || (c.stage === 'draft' && c.createdById !== actor.id)) {
+      throw new NotFoundException('Case not found.');
+    }
+    this.assertCanSee(actor, c);
+
+    const isAdmin = actor.permissions.has(PERMISSIONS.WorkflowManage);
+    const mayManage = c.createdById === actor.id || isAdmin;
+    const mayPause = mayManage || actor.permissions.has(PERMISSIONS.WorkflowStageApprove);
+    const finished = CLOSED_STAGES.includes(c.stage);
+    const reason = note?.trim() ?? '';
+    const log = (act: string, toStage: string | null) =>
+      this.prisma.caseActivity.create({
+        data: {
+          id: newId(),
+          caseId: id,
+          actorId: actor.id,
+          action: act,
+          fromStage: c.stage,
+          toStage,
+          note: reason || null,
+        },
+      });
+    const audit = (act: string, detail: Record<string, unknown> = {}, after?: Promise<unknown>) =>
+      this.audit.append(
+        {
+          action: act,
+          entityType: 'Case',
+          entityId: id,
+          actorId: actor.id,
+          detail: { ref: c.ref, ...detail },
+        },
+        after ? { after } : {},
+      );
+    // Apply the change, write its history entry and its audit entry together. The audit row is only
+    // committed once the change itself has succeeded.
+    const apply = async (
+      data: Record<string, unknown>,
+      activity: string,
+      toStage: string | null,
+      auditAction: string,
+      detail: Record<string, unknown> = {},
+    ) => {
+      const changed = Promise.all([
+        this.prisma.case.update({ where: { id }, data: { ...data, lastUpdatedById: actor.id } }),
+        log(activity, toStage),
+      ]);
+      changed.catch(() => undefined);
+      await Promise.all([changed, audit(auditAction, detail, changed)]);
+    };
+
+    switch (action) {
+      case 'delete':
+        if (!mayManage) {
+          throw new ForbiddenException(
+            'Only the proposer who raised this case, or an administrator, can delete it.',
+          );
+        }
+        // A vendor already created in the ERP cannot simply disappear from this side.
+        if (c.erpRef) {
+          throw new BadRequestException(
+            'This vendor has already been created in the ERP, so the case cannot be deleted. Block the vendor instead.',
+          );
+        }
+        await this.permanentDelete(actor, c);
+        return c.ref;
+
+      case 'hold':
+        if (!mayPause)
+          throw new ForbiddenException('You are not allowed to put this case on hold.');
+        if (c.stage === 'draft') throw new BadRequestException('A draft cannot be put on hold.');
+        if (finished) throw new BadRequestException('A closed case cannot be put on hold.');
+        if (c.onHold) throw new BadRequestException('This case is already on hold.');
+        if (!reason) throw new BadRequestException('A reason is required to put a case on hold.');
+        await apply({ onHold: true }, 'hold', c.stage, 'case.hold');
+        return c.ref;
+
+      case 'resume':
+        if (!mayPause) throw new ForbiddenException('You are not allowed to resume this case.');
+        if (!c.onHold) throw new BadRequestException('This case is not on hold.');
+        await apply({ onHold: false }, 'resume', c.stage, 'case.resume');
+        return c.ref;
+
+      case 'cancel':
+        if (!mayManage) {
+          throw new ForbiddenException(
+            'Only the proposer who raised this case, or an administrator, can cancel it.',
+          );
+        }
+        if (c.stage === 'draft') {
+          throw new BadRequestException('A draft can be deleted instead of cancelled.');
+        }
+        if (finished) {
+          throw new BadRequestException(
+            c.stage === 'approved'
+              ? 'An approved case cannot be cancelled.'
+              : c.stage === 'cancelled'
+                ? 'This case is already cancelled.'
+                : 'This case is already closed.',
+          );
+        }
+        if (!reason) throw new BadRequestException('A reason is required to cancel a case.');
+        await apply(
+          { stage: 'cancelled', onHold: false },
+          'cancelled',
+          'cancelled',
+          'case.cancel',
+          { fromStage: c.stage },
+        );
+        return c.ref;
+
+      case 'reopen': {
+        if (!mayManage) {
+          throw new ForbiddenException(
+            'Only the proposer who raised this case, or an administrator, can reopen it.',
+          );
+        }
+        if (c.stage !== 'rejected' && c.stage !== 'cancelled') {
+          throw new BadRequestException('Only a cancelled or rejected case can be reopened.');
+        }
+        if (!reason) throw new BadRequestException('A reason is required to reopen a case.');
+        // Stages a reviewer rejected go back to waiting for review; approved ones stay approved.
+        const active = this.activeStagesFor(c);
+        const before = await this.stageStatuses(id, active);
+        for (const s of active) {
+          if (before[s] === 'rejected') {
+            await this.writeStage(id, s, {
+              status: 'pending',
+              decision: null,
+              enteredAt: new Date(),
+            });
+          }
+        }
+        const sap = await this.readStage(id, SAP_STAGE);
+        const after = await this.stageStatuses(id, active);
+        let phase: string = 'review';
+        if (sap?.status === 'rejected') {
+          await this.writeStage(id, SAP_STAGE, {
+            status: 'pending',
+            decision: null,
+            enteredAt: new Date(),
+          });
+          phase = SAP_STAGE;
+        } else if (active.every((s) => after[s] === 'approved')) {
+          phase = SAP_STAGE;
+          if (!sap || sap.status === 'waiting') {
+            await this.writeStage(id, SAP_STAGE, { status: 'pending', enteredAt: new Date() });
+          }
+        }
+        await this.prisma.case.update({
+          where: { id },
+          data: { stage: phase, onHold: false, lastUpdatedById: actor.id },
+        });
+        await log('reopened', phase);
+        await audit('case.reopen', { toStage: phase });
+        return c.ref;
+      }
+    }
+  }
+
+  /**
+   * Permanently remove a case: its rows (every table linked to a case is set to delete with it),
+   * the notifications that point at it, and the uploaded files in object storage. Because the case
+   * row is gone it disappears from every queue and screen. The audit log is append-only and keeps a
+   * record that the case was deleted, by whom, and what it was.
+   */
+  private async permanentDelete(actor: AuthUser, c: { id: string; ref: string; stage: string }) {
+    const [docs, general] = await Promise.all([
+      this.prisma.document.findMany({ where: { caseId: c.id }, select: { storageKey: true } }),
+      this.prisma.caseGeneral.findUnique({
+        where: { caseId: c.id },
+        select: { legalName: true },
+      }),
+    ]);
+    await this.prisma.$transaction([
+      this.prisma.notification.deleteMany({ where: { link: { contains: c.id } } }),
+      this.prisma.case.delete({ where: { id: c.id } }),
+    ]);
+    let filesRemoved = 0;
+    let filesNotRemoved = 0;
+    for (const d of docs) {
+      try {
+        await this.storage.remove(d.storageKey);
+        filesRemoved += 1;
+      } catch (e) {
+        filesNotRemoved += 1;
+        this.logger.warn(
+          `Stored file not removed after deleting ${c.ref}: ${(e as Error).message}`,
+        );
+      }
+    }
+    await this.audit.append({
+      action: 'case.delete',
+      entityType: 'Case',
+      entityId: c.id,
+      actorId: actor.id,
+      detail: {
+        ref: c.ref,
+        stage: c.stage,
+        vendor: general?.legalName || null,
+        filesRemoved,
+        filesNotRemoved,
+      },
+    });
+  }
+
+  // ---------- drafts (autosaved work in progress) ----------
+
+  /** Vendor detail row for a draft: everything optional; blank values clear the column. */
+  private async draftGeneral(input: DraftInput): Promise<Record<string, unknown>> {
+    const t = (v?: string) => (v?.trim() ? v.trim() : null);
+    const g: Record<string, unknown> = {
+      legalName: input.legalName?.trim() ?? '',
+      tradeName: t(input.tradeName),
+      businessAddress: t(input.businessAddress),
+      contactName: t(input.contactName),
+      contactEmail: t(input.contactEmail),
+      contactPhone: t(input.contactPhone),
+      signatoryName: t(input.signatoryName),
+      signatoryEmail: t(input.signatoryEmail),
+      signatoryMobile: t(input.signatoryMobile),
+      gstin: t(input.gstin),
+      gstinBlindIndex: t(input.gstin) ? this.blind.index(input.gstin!.trim()) : null,
+      ifsc: t(input.ifsc),
+      bankName: t(input.bankName),
+      branch: t(input.branch),
+      businessUnit: t(input.businessUnit),
+      costCentre: t(input.costCentre),
+      spend: input.spend ?? 0,
+      contractMonths: input.contractMonths ?? null,
+      natureOfService: t(input.natureOfService),
+      justification: input.justification ?? '',
+      coiDeclared: input.coiDeclared ?? false,
+      coiDetails: t(input.coiDetails),
+      dataAccess: t(input.dataAccess),
+      systemAccess: t(input.systemAccess),
+      subcontract: t(input.subcontract),
+      delivery: t(input.delivery),
+      screening: t(input.screening),
+      conflict: t(input.conflict),
+      litigation: t(input.litigation),
+      insurance: t(input.insurance),
+      certifications: t(input.certifications),
+      isecItHardware: input.isecItHardware ?? false,
+      isecItSoftware: input.isecItSoftware ?? false,
+      isecAccessSystem: input.isecAccessSystem ?? false,
+      isecAccessNetwork: input.isecAccessNetwork ?? false,
+      isecAccessApps: input.isecAccessApps ?? false,
+      isecAccessPii: input.isecAccessPii ?? false,
+    };
+    // Sensitive identifiers: encrypted when supplied, cleared when blank, left alone when omitted
+    // or when a masked echo (••••) comes back from a view without the sensitive permission.
+    const sensitive: [keyof DraftInput, string, string][] = [
+      ['pan', 'panEnc', 'panBlindIndex'],
+      ['bankAccount', 'bankAccountEnc', 'bankBlindIndex'],
+      ['signatoryPan', 'signatoryPanEnc', 'signatoryPanBlindIndex'],
+    ];
+    for (const [key, encCol, idxCol] of sensitive) {
+      const v = input[key] as string | undefined;
+      if (v === undefined || v.includes('\u2022')) continue;
+      if (!v.trim()) {
+        g[encCol] = null;
+        g[idxCol] = null;
+      } else {
+        g[encCol] = await this.crypto.encryptToString(v.trim());
+        g[idxCol] = this.blind.index(v.trim());
+      }
+    }
+    return g;
+  }
+
+  /** Create a draft case (stage "draft"). Visible only to its proposer until it is submitted. */
+  async createDraft(actor: AuthUser, input: DraftInput) {
+    await this.assertSubCategory(input);
+    const [category, ref, general, partnerRows, teamRow] = await Promise.all([
+      this.categories.get(input.categoryKey),
+      this.nextRef(),
+      this.draftGeneral(input),
+      this.buildPartnerRows(input.partners),
+      this.team.resolve(actor, input.teamOverrides),
+    ]);
+    const published = await this.workflows.getPublished(category.workflowKey);
+    const id = newId();
+    await this.prisma.case.create({
+      data: {
+        id,
+        ref,
+        categoryKey: input.categoryKey,
+        subCategoryKey: input.subCategoryKey || null,
+        workflowKey: published.key,
+        workflowVersion: published.version,
+        stage: 'draft',
+        tier: 'low',
+        riskScore: 0,
+        createdById: actor.id,
+        lastUpdatedById: actor.id,
+        infosecRequired: false,
+        general: {
+          create: { id: newId(), ...general } as Prisma.CaseGeneralCreateWithoutCaseInput,
+        },
+        partners: { create: partnerRows },
+        vendorReferences: { create: this.buildReferenceRows(input.references) },
+        rcLimits: { create: this.buildRcLimitRows(input.rcLimits) },
+        teamStructure: { create: { id: newId(), ...teamRow } },
+        activity: {
+          create: { id: newId(), actorId: actor.id, action: 'draft_created', toStage: 'draft' },
+        },
+      },
+    });
+    await this.audit.append({
+      action: 'case.draft_create',
+      entityType: 'Case',
+      entityId: id,
+      actorId: actor.id,
+      detail: { ref },
+    });
+    return { id, ref, savedAt: new Date().toISOString() };
+  }
+
+  private async ownDraft(actor: AuthUser, id: string) {
+    const c = await this.prisma.case.findUnique({
+      where: { id },
+      select: { id: true, ref: true, stage: true, createdById: true },
+    });
+    // A draft is private to its proposer, so anyone else is told it does not exist.
+    if (!c || c.createdById !== actor.id) throw new NotFoundException('Case not found.');
+    if (c.stage !== 'draft') {
+      throw new BadRequestException('Only a draft can be saved this way. Submit changes instead.');
+    }
+    return c;
+  }
+
+  /** Autosave: overwrite the draft's contents with the form as it stands. */
+  async updateDraftContent(actor: AuthUser, id: string, input: DraftInput) {
+    const c = await this.ownDraft(actor, id);
+    await this.assertSubCategory(input);
+    const [category, general, partnerRows, teamRow] = await Promise.all([
+      this.categories.get(input.categoryKey),
+      this.draftGeneral(input),
+      this.buildPartnerRows(input.partners),
+      this.team.resolve(actor, input.teamOverrides),
+    ]);
+    const published = await this.workflows.getPublished(category.workflowKey);
+    await this.prisma.case.update({
+      where: { id },
+      data: {
+        categoryKey: input.categoryKey,
+        subCategoryKey: input.subCategoryKey || null,
+        workflowKey: published.key,
+        workflowVersion: published.version,
+        lastUpdatedById: actor.id,
+        partners: { deleteMany: {}, create: partnerRows },
+        vendorReferences: { deleteMany: {}, create: this.buildReferenceRows(input.references) },
+        rcLimits: { deleteMany: {}, create: this.buildRcLimitRows(input.rcLimits) },
+        teamStructure: {
+          upsert: { create: { id: newId(), ...teamRow }, update: teamRow },
+        },
+        general: {
+          upsert: {
+            create: { id: newId(), ...general } as Prisma.CaseGeneralCreateWithoutCaseInput,
+            update: general as Prisma.CaseGeneralUpdateWithoutCaseInput,
+          },
+        },
+      },
+    });
+    return { id, ref: c.ref, savedAt: new Date().toISOString() };
+  }
+
+  /** Discard a draft the proposer no longer wants (drafts only; submitted cases are never deleted). */
+  async deleteDraft(actor: AuthUser, id: string) {
+    const c = await this.ownDraft(actor, id);
+    await this.prisma.case.delete({ where: { id } });
+    await this.audit.append({
+      action: 'case.draft_discard',
+      entityType: 'Case',
+      entityId: id,
+      actorId: actor.id,
+      detail: { ref: c.ref },
+    });
+    return { ok: true };
+  }
+
   /**
    * Proposer edits their own case and resubmits. Allowed while it is a fresh draft, or when one or
    * more parallel review stages were sent back to them. On resubmit only the stage(s) that were
@@ -804,6 +1650,9 @@ export class CasesService {
     if (!c) throw new NotFoundException('Case not found.');
     if (c.createdById !== actor.id) {
       throw new ForbiddenException('Only the proposer who raised this case can edit it.');
+    }
+    if (CLOSED_STAGES.includes(c.stage)) {
+      throw new BadRequestException('This case is closed and can no longer be edited.');
     }
 
     const isec = {
@@ -824,27 +1673,44 @@ export class CasesService {
     if (isDraft) {
       reopen.push(...active);
     } else {
-      for (const s of active) {
-        const row = await this.readStage(id, s);
+      const rows = await Promise.all(active.map((s) => this.readStage(id, s)));
+      active.forEach((s, i) => {
+        const row = rows[i];
         if (!row || row.status === 'sent_back') reopen.push(s);
-      }
+      });
       if (reopen.length === 0) {
         throw new BadRequestException('This case has no stage awaiting your changes.');
       }
     }
 
-    const category = await this.categories.get(input.categoryKey);
-    if (input.subCategoryKey) {
-      const sc = await this.prisma.vendorSubCategory.findUnique({
-        where: { key: input.subCategoryKey },
-      });
-      if (!sc || sc.categoryKey !== input.categoryKey) {
-        throw new BadRequestException('Invalid sub-category for the selected category.');
-      }
-    }
+    const [category] = await Promise.all([
+      this.categories.get(input.categoryKey),
+      this.assertSubCategory(input),
+    ]);
     const def = await this.workflows.publishedDefinition(category.workflowKey);
     const risk = assessRisk(this.riskInputFrom(input, category.enhancedDueDiligence));
     const tier = risk.tier;
+
+    // First submission of a draft does what create() does for a new case: due-diligence checklist,
+    // duplicate detection and the `case.create` audit event.
+    const pack = isDraft
+      ? dueDiligencePack(risk, this.riskInputFrom(input, category.enhancedDueDiligence))
+      : [];
+    const unmasked = (v?: string) => (v && !v.includes('\u2022') ? v : null);
+    const duplicates = isDraft
+      ? await this.detectDuplicates(
+          {
+            pan: unmasked(input.pan) ? this.blind.index(input.pan as string) : null,
+            gstin: input.gstin ? this.blind.index(input.gstin) : null,
+            bank: unmasked(input.bankAccount)
+              ? this.blind.index(input.bankAccount as string)
+              : null,
+            email: input.contactEmail,
+            phone: input.contactPhone,
+          },
+          id,
+        )
+      : [];
 
     // Sensitive identifiers (PAN / bank / signatory PAN) are only rewritten when a fresh, unmasked
     // value is supplied — the detail form shows masked values, so a masked echo is ignored.
@@ -898,6 +1764,8 @@ export class CasesService {
       general.signatoryPanBlindIndex = this.blind.index(input.signatoryPan as string);
     }
 
+    const teamRow = await this.team.resolve(actor, input.teamOverrides);
+
     // The case may have been created before case_general existed; upsert to be safe.
     await this.prisma.case.update({
       where: { id },
@@ -911,6 +1779,29 @@ export class CasesService {
         riskScore: risk.score,
         infosecRequired,
         lastUpdatedById: actor.id,
+        ...(isDraft
+          ? {
+              submittedAt: new Date(),
+              checklist: {
+                create: pack.map((it) => ({
+                  id: newId(),
+                  itemId: it.id,
+                  label: it.label,
+                  role: it.role,
+                })),
+              },
+            }
+          : {}),
+        partners: { deleteMany: {}, create: await this.buildPartnerRows(input.partners) },
+        vendorReferences: { deleteMany: {}, create: this.buildReferenceRows(input.references) },
+        rcLimits: { deleteMany: {}, create: this.buildRcLimitRows(input.rcLimits) },
+        ...(teamRow
+          ? {
+              teamStructure: {
+                upsert: { create: { id: newId(), ...teamRow }, update: teamRow },
+              },
+            }
+          : {}),
         general: {
           upsert: {
             create: { id: newId(), ...general } as Prisma.CaseGeneralCreateWithoutCaseInput,
@@ -921,41 +1812,72 @@ export class CasesService {
           create: {
             id: newId(),
             actorId: actor.id,
-            action: 'resubmitted',
+            action: isDraft ? 'submitted_for_review' : 'resubmitted',
             toStage: 'review',
-            note: `Amended and resubmitted; reopened for review: ${reopen.join(', ')}.`,
+            note: isDraft
+              ? `Parallel review opened: ${reopen.join(', ')}.`
+              : `Amended and resubmitted; reopened for review: ${reopen.join(', ')}.`,
           },
         },
       },
     });
 
     // Reopen the chosen stages for review; ensure a (gated) SAP row exists.
-    for (const s of reopen) {
-      await this.writeStage(id, s, { status: 'pending', enteredAt: new Date() });
-    }
-    await this.writeStage(id, SAP_STAGE, { status: 'waiting' });
-    await this.captureResponses(id, actor, {
-      pan: isMasked(input.pan) ? null : input.pan,
-      gstin: input.gstin,
-      bankAccount: isMasked(input.bankAccount) ? null : input.bankAccount,
-      ifsc: input.ifsc,
-    });
-
-    await this.audit.append({
-      action: 'case.update',
-      entityType: 'Case',
-      entityId: id,
-      actorId: actor.id,
-      detail: { ref: c.ref, tier, reopened: reopen, infosecRequired },
-    });
-    return { id, ref: c.ref, tier, stage: 'review', infosecRequired, reopened: reopen };
+    const reopenedAt = new Date();
+    await Promise.all([
+      ...reopen.map((s) => this.writeStage(id, s, { status: 'pending', enteredAt: reopenedAt })),
+      this.writeStage(id, SAP_STAGE, { status: 'waiting' }),
+      this.captureResponses(id, actor, {
+        pan: isMasked(input.pan) ? null : input.pan,
+        gstin: input.gstin,
+        bankAccount: isMasked(input.bankAccount) ? null : input.bankAccount,
+        ifsc: input.ifsc,
+      }),
+      this.audit.append({
+        action: isDraft ? 'case.create' : 'case.update',
+        entityType: 'Case',
+        entityId: id,
+        actorId: actor.id,
+        detail: isDraft
+          ? {
+              ref: c.ref,
+              tier,
+              category: input.categoryKey,
+              duplicateFlags: duplicates.length,
+              infosecRequired,
+              teamOverridden: teamRow.overriddenFields,
+            }
+          : { ref: c.ref, tier, reopened: reopen, infosecRequired },
+      }),
+    ]);
+    return {
+      id,
+      ref: c.ref,
+      tier,
+      riskScore: risk.score,
+      drivers: risk.drivers,
+      duplicates,
+      stage: 'review',
+      infosecRequired,
+      reopened: reopen,
+    };
   }
 
   async list(
     actor: AuthUser,
-    filters: { stage?: string; tier?: string; q?: string; queue?: string },
+    filters: {
+      stage?: string;
+      tier?: string;
+      q?: string;
+      queue?: string;
+      ref?: string;
+      status?: string;
+    },
   ) {
-    const where: Record<string, unknown> = {};
+    const where: Record<string, unknown> = {
+      // Drafts are private work in progress: only the proposer who started one sees it.
+      AND: [{ OR: [{ stage: { not: 'draft' } }, { createdById: actor.id }] }],
+    };
     if (!this.canSeeAll(actor)) where.OR = [{ createdById: actor.id }, { assigneeId: actor.id }];
     // A stage queue (?queue=fcu|operation|legal|infosec) lists cases awaiting that parallel review;
     // ?queue=sap lists cases at the SAP confirmation gate.
@@ -976,17 +1898,52 @@ export class CasesService {
     } else if (filters.stage) {
       where.stage = filters.stage;
     }
+    // Status: open = still being worked on, hold = paused, closed = decided (approved or rejected),
+    // cancelled = withdrawn by the proposer or an administrator.
+    // Drafts count as open. Anything else (or "all") applies no status filter.
+    const finished = CLOSED_STAGES;
+    const and = where.AND as Record<string, unknown>[];
+    if (filters.status === 'open') and.push({ stage: { notIn: finished }, onHold: false });
+    else if (filters.status === 'hold') and.push({ stage: { notIn: finished }, onHold: true });
+    else if (filters.status === 'closed') and.push({ stage: { in: ['approved', 'rejected'] } });
+    else if (filters.status === 'cancelled') and.push({ stage: 'cancelled' });
     if (filters.tier) where.tier = filters.tier;
+    // Case ID filter: partial, case-insensitive match on the reference (e.g. "0004" or "vom-2026").
+    const refQuery = filters.ref?.trim().slice(0, 40);
+    if (refQuery) where.ref = { contains: likeEscape(refQuery), mode: 'insensitive' };
     // The vendor name lives on case_general now.
-    if (filters.q) where.general = { legalName: { contains: filters.q, mode: 'insensitive' } };
-    const rows = await this.prisma.case.findMany({
+    if (filters.q) {
+      where.general = { legalName: { contains: likeEscape(filters.q), mode: 'insensitive' } };
+    }
+    const [rows, names] = await Promise.all([
+      this.listRows(where),
+      this.subCategoryNames.get('all', async () => {
+        const subs = await this.prisma.vendorSubCategory.findMany({
+          select: { key: true, name: true },
+        });
+        return new Map(subs.map((s) => [s.key, s.name]));
+      }),
+    ]);
+    // Flatten legalName and resolve the sub-category's display name for the list.
+    return rows.map(({ general, ...r }) => ({
+      ...r,
+      legalName: general?.legalName ?? '',
+      tradeName: general?.tradeName ?? '',
+      subCategoryName: r.subCategoryKey ? (names.get(r.subCategoryKey) ?? null) : null,
+    }));
+  }
+
+  private listRows(where: Record<string, unknown>) {
+    return this.prisma.case.findMany({
       where,
+      relationLoadStrategy: 'join',
       orderBy: { createdAt: 'desc' },
       take: 100,
       select: {
         id: true,
         ref: true,
         categoryKey: true,
+        subCategoryKey: true,
         stage: true,
         tier: true,
         onHold: true,
@@ -995,18 +1952,22 @@ export class CasesService {
         assigneeId: true,
         createdById: true,
         createdAt: true,
-        general: { select: { legalName: true } },
+        general: { select: { legalName: true, tradeName: true } },
       },
     });
-    // Flatten legalName so the list shape is unchanged for callers.
-    return rows.map(({ general, ...r }) => ({ ...r, legalName: general?.legalName ?? '' }));
   }
 
   async get(actor: AuthUser, id: string) {
     const c = await this.prisma.case.findUnique({
       where: { id },
+      // One SQL statement with joins instead of a query per relation (each is a network round trip).
+      relationLoadStrategy: 'join',
       include: {
         general: true,
+        partners: { orderBy: { position: 'asc' } },
+        vendorReferences: { orderBy: { position: 'asc' } },
+        rcLimits: { orderBy: { position: 'asc' } },
+        teamStructure: true,
         checklist: { orderBy: { itemId: 'asc' } },
         comments: { orderBy: { at: 'asc' } },
         activity: { orderBy: { at: 'asc' } },
@@ -1016,9 +1977,14 @@ export class CasesService {
         operationStage: true,
         legalStage: true,
         sapStage: true,
+        responses: {
+          select: { kind: true, payloadEnc: true, verified: true, status: true, capturedAt: true },
+        },
       },
     });
-    if (!c) throw new NotFoundException('Case not found.');
+    if (!c || (c.stage === 'draft' && c.createdById !== actor.id)) {
+      throw new NotFoundException('Case not found.');
+    }
     this.assertCanSee(actor, c);
     return this.present(c as unknown as Record<string, unknown>, actor);
   }

@@ -20,9 +20,11 @@ export class StatsService {
 
   async dashboard(actor: AuthUser): Promise<DashboardStats> {
     const canAll = actor.permissions.has(PERMISSIONS.VendorReadAll);
-    const scope: Prisma.CaseWhereInput = canAll
-      ? {}
-      : { OR: [{ createdById: actor.id }, { assigneeId: actor.id }] };
+    // Drafts are unsubmitted work in progress, not part of the onboarding pipeline.
+    const scope: Prisma.CaseWhereInput = {
+      stage: { not: 'draft' },
+      ...(canAll ? {} : { OR: [{ createdById: actor.id }, { assigneeId: actor.id }] }),
+    };
 
     const [total, byStageRaw, byTierRaw, overdue, active, reviewRequired] = await Promise.all([
       this.prisma.case.count({ where: scope }),
@@ -33,10 +35,13 @@ export class StatsService {
           ...scope,
           onHold: false,
           dueAt: { lt: new Date() },
-          stage: { notIn: ['approved', 'rejected'] },
+          // stage is already restricted (no drafts) by scope, so combine instead of overwriting it
+          AND: [{ stage: { notIn: ['approved', 'rejected', 'cancelled'] } }],
         },
       }),
-      this.prisma.case.count({ where: { ...scope, stage: { notIn: ['approved', 'rejected'] } } }),
+      this.prisma.case.count({
+        where: { ...scope, AND: [{ stage: { notIn: ['approved', 'rejected', 'cancelled'] } }] },
+      }),
       this.prisma.caseVerification.count({
         where: { reviewRequired: true, ...(canAll ? {} : { case: scope }) },
       }),

@@ -1,0 +1,76 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build shared packages",
+      "type": "shell",
+      "command": "corepack pnpm --filter @vop/shared build; corepack pnpm --filter @vop/config build",
+      "options": {
+        "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+      },
+      "presentation": { "reveal": "silent", "panel": "shared", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "API: dev",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ${workspaceFolder}\\apps\\api\\scripts\\dev-api.ps1",
+      "isBackground": true,
+      "dependsOn": ["Build shared packages"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "vop" },
+      "problemMatcher": {
+        "owner": "nest",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Starting compilation",
+          "endsPattern": "Nest application successfully started|Found 0 errors"
+        }
+      }
+    },
+    {
+      "label": "Web: dev",
+      "type": "shell",
+      "command": "corepack pnpm --filter @vop/web dev",
+      "isBackground": true,
+      "dependsOn": ["Build shared packages"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "vop" },
+      "problemMatcher": {
+        "owner": "next",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Starting|next dev",
+          "endsPattern": "Ready in|Local:"
+        }
+      }
+    },
+    {
+      "label": "Web: fast (production build)",
+      "detail": "Pages load much faster than 'Web: dev' (no per-page compile). Rebuild after UI edits.",
+      "type": "shell",
+      "command": "$env:VERCEL='1'; corepack pnpm --filter @vop/shared build; corepack pnpm --filter @vop/web exec next build; corepack pnpm --filter @vop/web start",
+      "options": {
+        "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+      },
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "vop" },
+      "problemMatcher": {
+        "owner": "next",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Creating an optimized production build",
+          "endsPattern": "Ready in|Local:"
+        }
+      }
+    },
+    {
+      "label": "Run VOP (API + Web)",
+      "dependsOn": ["API: dev", "Web: dev"],
+      "dependsOrder": "parallel",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    }
+  ]
+}

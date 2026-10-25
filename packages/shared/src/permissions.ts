@@ -44,6 +44,9 @@ export const PERMISSIONS = {
   // documents (later phases)
   DocumentUpload: 'document:upload',
   DocumentDownload: 'document:download',
+
+  // KYC & risk checks on the authorised signatory (Digi KYC, Hunter, IXSite, CRIF / CIBIL)
+  KycInitiate: 'kyc:initiate',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];

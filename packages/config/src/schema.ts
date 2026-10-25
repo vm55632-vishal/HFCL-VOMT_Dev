@@ -20,7 +20,7 @@ const numish = (def: number) =>
 
 const NodeEnv = z.enum(['development', 'test', 'production']).default('development');
 
-const StorageDriver = z.enum(['minio', 's3', 'azure-blob', 'gcs', 'local']).default('minio');
+const StorageDriver = z.enum(['minio', 's3', 'r2', 'azure-blob', 'gcs', 'local']).default('minio');
 const SecretsDriver = z.enum(['env', 'vault', 'azure-kv', 'aws-sm', 'gcp-sm']).default('env');
 const EmailDriver = z.enum(['smtp', 'sendgrid', 'azure-acs', 'aws-ses']).default('smtp');
 const SmsDriver = z.enum(['mock', 'msg91', 'twilio', 'sns']).default('mock');

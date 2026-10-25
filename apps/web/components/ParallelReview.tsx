@@ -75,27 +75,33 @@ export default function ParallelReview({
       ? 'confirmed'
       : caseStage === 'rejected'
         ? 'rejected'
-        : caseStage === 'sap'
-          ? 'ready'
-          : 'waiting';
+        : caseStage === 'cancelled'
+          ? 'cancelled'
+          : caseStage === 'sap'
+            ? 'ready'
+            : 'waiting';
   const sapBadge =
     sapStatus === 'confirmed'
       ? { box: 'ok', pill: 'ok', text: 'Confirmed' }
       : sapStatus === 'rejected'
         ? { box: 'danger', pill: 'danger', text: 'Rejected' }
-        : sapStatus === 'ready'
-          ? { box: 'amber', pill: 'warn', text: 'Ready to Confirm' }
-          : { box: 'muted', pill: 'draft', text: 'Waiting' };
+        : sapStatus === 'cancelled'
+          ? { box: 'muted', pill: 'draft', text: 'Cancelled' }
+          : sapStatus === 'ready'
+            ? { box: 'amber', pill: 'warn', text: 'Ready to Confirm' }
+            : { box: 'muted', pill: 'draft', text: 'Waiting' };
   const sapText =
     sapStatus === 'confirmed'
       ? 'The vendor has been confirmed in SAP and activated.'
       : sapStatus === 'rejected'
         ? 'The case was rejected at SAP confirmation.'
-        : sapStatus === 'ready'
-          ? 'All parallel reviews are completed. Confirm with SAP to proceed further.'
-          : anyRejected
-            ? 'A review was rejected — SAP confirmation will not proceed.'
-            : 'SAP confirmation unlocks once every parallel review is approved.';
+        : sapStatus === 'cancelled'
+          ? 'This case was cancelled, so no further reviews or confirmation are needed.'
+          : sapStatus === 'ready'
+            ? 'All parallel reviews are completed. Confirm with SAP to proceed further.'
+            : anyRejected
+              ? 'A review was rejected — SAP confirmation will not proceed.'
+              : 'SAP confirmation unlocks once every parallel review is approved.';
 
   return (
     <section className="prv">

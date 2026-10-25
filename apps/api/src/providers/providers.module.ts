@@ -10,8 +10,10 @@ import {
   SCAN_PROVIDER,
   KEY_PROVIDER,
   VERIFICATION_PROVIDER,
+  KYC_PROVIDER,
 } from './contracts';
-import { LocalFsStorage, MinioStorage, NotImplementedStorage } from './storage.adapters';
+import { MockKycProvider, NotImplementedKyc } from './kyc.adapters';
+import { LocalFsStorage, MinioStorage, R2Storage, NotImplementedStorage } from './storage.adapters';
 import {
   EnvSecretsProvider,
   VaultSecretsProvider,
@@ -40,6 +42,8 @@ const providers: Provider[] = [
         case 'minio':
         case 's3':
           return new MinioStorage(c);
+        case 'r2':
+          return new R2Storage(c);
         case 'azure-blob':
           return new NotImplementedStorage('Azure Blob');
         case 'gcs':
@@ -143,6 +147,13 @@ const providers: Provider[] = [
         ? new MockVerificationProvider()
         : new NotImplementedVerification('Aggregator'),
   },
+  {
+    // Same switch as the registry verification: mock for dev, the live provider once it is configured.
+    provide: KYC_PROVIDER,
+    inject: [APP_CONFIG],
+    useFactory: (c: AppConfig) =>
+      c.drivers.verification === 'mock' ? new MockKycProvider() : new NotImplementedKyc(),
+  },
 ];
 
 @Global()
@@ -157,6 +168,7 @@ const providers: Provider[] = [
     SCAN_PROVIDER,
     KEY_PROVIDER,
     VERIFICATION_PROVIDER,
+    KYC_PROVIDER,
   ],
 })
 export class ProvidersModule {}

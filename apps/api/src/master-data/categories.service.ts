@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { newId } from '@vop/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { TtlCache } from '../common/ttl-cache';
 
 export interface CategoryInput {
   key: string;
@@ -16,6 +17,11 @@ export interface CategoryInput {
 
 @Injectable()
 export class CategoriesService {
+  // Hot read-path caches (intake-form category list, single category lookup). create()/update()
+  // clear them so admin edits show immediately; the TTL bounds staleness.
+  private readonly lists = new TtlCache<Awaited<ReturnType<CategoriesService['loadList']>>>(30_000);
+  private readonly byKey = new TtlCache<Awaited<ReturnType<CategoriesService['loadOne']>>>(30_000);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
@@ -24,6 +30,10 @@ export class CategoriesService {
   /** Categories for the intake form (active only) or the full set for admins, each with its
    *  sub-categories (VOMT account groups) for the dependent dropdown. */
   list(includeInactive = false) {
+    return this.lists.get(includeInactive ? 'all' : 'active', () => this.loadList(includeInactive));
+  }
+
+  private loadList(includeInactive: boolean) {
     return this.prisma.vendorCategory.findMany({
       where: includeInactive ? {} : { active: true },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
@@ -37,9 +47,18 @@ export class CategoriesService {
   }
 
   async get(key: string) {
+    return this.byKey.get(key, () => this.loadOne(key));
+  }
+
+  private async loadOne(key: string) {
     const cat = await this.prisma.vendorCategory.findUnique({ where: { key } });
     if (!cat) throw new NotFoundException(`Category "${key}" not found.`);
     return cat;
+  }
+
+  private invalidate(): void {
+    this.lists.clear();
+    this.byKey.clear();
   }
 
   async create(input: CategoryInput, actorId: string) {
@@ -58,6 +77,7 @@ export class CategoriesService {
         workflowKey: input.workflowKey,
       },
     });
+    this.invalidate();
     await this.audit.append({
       action: 'category.create',
       entityType: 'VendorCategory',
@@ -88,6 +108,7 @@ export class CategoriesService {
         active: changes.active,
       },
     });
+    this.invalidate();
     await this.audit.append({
       action: 'category.update',
       entityType: 'VendorCategory',

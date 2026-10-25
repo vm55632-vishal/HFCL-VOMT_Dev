@@ -50,6 +50,9 @@ async function bootstrap(): Promise<void> {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    // Let the browser remember the preflight answer, so it does not send an extra OPTIONS request
+    // before every API call (each one is a full network round trip when the API is remote).
+    maxAge: 600,
   });
 
   app.setGlobalPrefix('api/v1');

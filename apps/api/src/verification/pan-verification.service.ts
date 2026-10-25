@@ -200,7 +200,8 @@ export class PanVerificationService {
     // Same-day cache: an unchanged PAN in this scope is looked up once per day.
     if (scope) {
       const hit = await this.cache.get<PanVerificationResult>(scope, 'pan', pan);
-      if (hit) return { ...hit, cached: true };
+      // Only reuse a real result: an earlier empty "verified" answer must be looked up again.
+      if (hit?.verified && hit.name) return { ...hit, cached: true };
     }
 
     const token = await this.getToken();
@@ -226,6 +227,10 @@ export class PanVerificationService {
       };
     }
     const fields = mapPanFields(record);
+    // A record with no holder name is not a verification (it is usually an error object in disguise).
+    if (!fields.name) {
+      return { pan, verified: false, message: 'No PAN record found.' };
+    }
 
     // 2) GSTINs linked to the PAN (serviceTypeId 12) — best-effort; never blocks PAN verification.
     let gstins: GstinEntry[] | undefined;
@@ -439,8 +444,32 @@ export class PanVerificationService {
           : (providerMsg ?? `Provider returned ${res.status}.`),
       };
     }
+    // The provider can answer HTTP 200 and still report a failure inside the body, for example
+    // statusCode 425 with { code: 401, message: "IP not whitelisted" }. That is an error, not a record.
+    const failure = providerFailure(payload);
+    if (failure) {
+      return {
+        error: /ip not whitelisted/i.test(failure)
+          ? "The verification provider rejected this server's IP address (not whitelisted). Ask the provider to whitelist the server's current public IP, then try again."
+          : failure,
+      };
+    }
     return { payload };
   }
+}
+
+/** A failure reported inside a provider response body, or undefined when the body reports success. */
+function providerFailure(payload: unknown): string | undefined {
+  const root = payload as { response?: { body?: unknown }; body?: unknown } | undefined;
+  const body = (root?.response?.body ?? root?.body) as
+    { statusCode?: unknown; statusMsg?: unknown; data?: { message?: unknown } } | undefined;
+  if (!body || typeof body.statusCode !== 'number' || body.statusCode < 400) return undefined;
+  const first = Array.isArray(body.data?.message)
+    ? (body.data.message[0] as { message?: unknown } | undefined)
+    : undefined;
+  if (typeof first?.message === 'string' && first.message) return first.message;
+  if (typeof body.statusMsg === 'string' && body.statusMsg) return body.statusMsg;
+  return `The provider returned status ${body.statusCode}.`;
 }
 
 function trim(u: string): string {

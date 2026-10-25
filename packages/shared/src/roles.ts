@@ -70,7 +70,14 @@ export const ROLES: Record<RoleKey, RoleDefinition> = {
     label: 'Proposer',
     description: 'Initiates vendor requests and tracks their status. Sees only own requests.',
     builtIn: true,
-    permissions: [P.VendorCreate, P.VendorRead, P.VendorEdit, P.DocumentUpload],
+    permissions: [
+      P.VendorCreate,
+      P.VendorRead,
+      P.VendorEdit,
+      P.VendorViewSensitive,
+      P.DocumentUpload,
+      P.KycInitiate,
+    ],
   },
   [RoleKey.Approver]: {
     key: RoleKey.Approver,
@@ -98,23 +105,29 @@ export const ROLES: Record<RoleKey, RoleDefinition> = {
     label: 'Compliance / Legal',
     description: 'KYC, sanctions and conflict-of-interest stage.',
     builtIn: true,
-    permissions: [...REVIEW, P.VendorViewSensitive, P.DocumentDownload],
+    permissions: [...REVIEW, P.VendorViewSensitive, P.DocumentDownload, P.KycInitiate],
   },
   [RoleKey.InfoSec]: {
     key: RoleKey.InfoSec,
     label: 'Information Security',
     description:
-      'Reviews cases needing IT / network / application / PII access and approves, rejects or returns them before onboarding proceeds. Cannot view sensitive financial identifiers.',
+      'Reviews cases needing IT / network / application / PII access and approves, rejects or returns them before onboarding proceeds.',
     builtIn: true,
-    permissions: [...REVIEW],
+    permissions: [...REVIEW, P.VendorViewSensitive],
   },
   [RoleKey.Fcu]: {
     key: RoleKey.Fcu,
     label: 'FCU (Fraud Control Unit)',
     description:
-      'Parallel fraud-control review of a submitted case. Approves, rejects or returns its FCU stage.',
+      'Parallel fraud-control review of a submitted case. Records address-check findings, uploads the final FCU due-diligence report, and approves, rejects or returns its FCU stage.',
     builtIn: true,
-    permissions: [...REVIEW, P.DocumentDownload],
+    permissions: [
+      ...REVIEW,
+      P.VendorViewSensitive,
+      P.DocumentUpload,
+      P.DocumentDownload,
+      P.KycInitiate,
+    ],
   },
   [RoleKey.Operation]: {
     key: RoleKey.Operation,
@@ -122,7 +135,7 @@ export const ROLES: Record<RoleKey, RoleDefinition> = {
     description:
       'Parallel operations review of a submitted case. Approves, rejects or returns its Operation stage.',
     builtIn: true,
-    permissions: [...REVIEW, P.DocumentDownload],
+    permissions: [...REVIEW, P.VendorViewSensitive, P.DocumentDownload],
   },
   [RoleKey.Legal]: {
     key: RoleKey.Legal,
@@ -130,7 +143,7 @@ export const ROLES: Record<RoleKey, RoleDefinition> = {
     description:
       'Parallel legal review; drafts the vendor agreement and approves, rejects or returns its Legal stage.',
     builtIn: true,
-    permissions: [...REVIEW, P.DocumentUpload, P.DocumentDownload],
+    permissions: [...REVIEW, P.VendorViewSensitive, P.DocumentUpload, P.DocumentDownload],
   },
   [RoleKey.Sap]: {
     key: RoleKey.Sap,
@@ -138,7 +151,7 @@ export const ROLES: Record<RoleKey, RoleDefinition> = {
     description:
       'Final confirmation stage. Sees every parallel stage’s completion and confirms the vendor into SAP/ERP once all are approved.',
     builtIn: true,
-    permissions: [...REVIEW, P.DocumentDownload],
+    permissions: [...REVIEW, P.VendorViewSensitive, P.DocumentDownload],
   },
   [RoleKey.Auditor]: {
     key: RoleKey.Auditor,

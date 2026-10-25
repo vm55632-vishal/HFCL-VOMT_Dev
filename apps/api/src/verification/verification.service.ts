@@ -138,7 +138,7 @@ export class VerificationService {
           where: {
             bankBlindIndex: g.bankBlindIndex,
             caseId: { not: caseId },
-            case: { stage: { not: 'rejected' } },
+            case: { stage: { notIn: ['rejected', 'cancelled'] } },
           },
         })
       : 0;

@@ -37,7 +37,16 @@ const CHAIN_LOCK = 4242;
 export class AuditService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async append(input: AuditInput): Promise<{ id: string; rowHash: string }> {
+  /**
+   * Append an audit entry. `opts.after` lets a caller start the entry (take the chain lock and read
+   * the previous hash) in parallel with the action it records, and have the row written only once
+   * that action has succeeded — if it rejects, the audit transaction rolls back and nothing is
+   * written. This overlaps the audit's round trips with the action's, without weakening ordering.
+   */
+  async append(
+    input: AuditInput,
+    opts: { after?: Promise<unknown> } = {},
+  ): Promise<{ id: string; rowHash: string }> {
     const ctx = currentContext();
     const id = newId();
     const at = new Date().toISOString();
@@ -55,38 +64,49 @@ export class AuditService {
       correlationId: ctx?.correlationId ?? null,
     };
 
-    return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${CHAIN_LOCK})`;
-      const last = await tx.auditLog.findFirst({
-        orderBy: { seq: 'desc' },
-        select: { rowHash: true },
-      });
-      const prevHash = last?.rowHash ?? GENESIS_HASH;
-      const rowHash = computeRowHash(payload, prevHash);
+    // The gating promise may reject before we await it below; mark it handled so Node doesn't flag
+    // an unhandled rejection (the rejection still propagates when we await it inside the tx).
+    opts.after?.catch(() => undefined);
 
-      const detailData: Prisma.InputJsonValue | typeof Prisma.JsonNull =
-        payload.detail === null ? Prisma.JsonNull : (payload.detail as Prisma.InputJsonValue);
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${CHAIN_LOCK})`;
+        const last = await tx.auditLog.findFirst({
+          orderBy: { seq: 'desc' },
+          select: { rowHash: true },
+        });
+        const prevHash = last?.rowHash ?? GENESIS_HASH;
+        const rowHash = computeRowHash(payload, prevHash);
 
-      await tx.auditLog.create({
-        data: {
-          id,
-          at: new Date(at),
-          actorId: payload.actorId,
-          actorRole: payload.actorRole,
-          ip: ctx?.ip ?? null,
-          userAgent: ctx?.userAgent ?? null,
-          action: payload.action,
-          entityType: payload.entityType,
-          entityId: payload.entityId,
-          outcome: payload.outcome as AuditOutcome,
-          detail: detailData,
-          correlationId: payload.correlationId,
-          prevHash,
-          rowHash,
-        },
-      });
-      return { id, rowHash };
-    });
+        // Hold the chain position, but only commit the row if the recorded action succeeded.
+        if (opts.after) await opts.after;
+
+        const detailData: Prisma.InputJsonValue | typeof Prisma.JsonNull =
+          payload.detail === null ? Prisma.JsonNull : (payload.detail as Prisma.InputJsonValue);
+
+        await tx.auditLog.create({
+          data: {
+            id,
+            at: new Date(at),
+            actorId: payload.actorId,
+            actorRole: payload.actorRole,
+            ip: ctx?.ip ?? null,
+            userAgent: ctx?.userAgent ?? null,
+            action: payload.action,
+            entityType: payload.entityType,
+            entityId: payload.entityId,
+            outcome: payload.outcome as AuditOutcome,
+            detail: detailData,
+            correlationId: payload.correlationId,
+            prevHash,
+            rowHash,
+          },
+        });
+        return { id, rowHash };
+      },
+      // The transaction may stay open while the gated action runs; allow for slow networks.
+      { maxWait: 15_000, timeout: 60_000 },
+    );
   }
 
   /** Recompute and verify the whole chain. Auditor-facing integrity check (ADR-0005). */

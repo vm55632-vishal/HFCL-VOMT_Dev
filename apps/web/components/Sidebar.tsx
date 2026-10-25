@@ -66,10 +66,26 @@ export default function Sidebar() {
     }
   }, []);
 
+  // The sidebar lives in the root layout, so it stays mounted while you move between pages — it is
+  // NOT remounted by navigating from the sign-in page to the app. Load the profile whenever a
+  // signed-in page is showing (not just once at app start, which happens on the hidden sign-in
+  // page). apiFetch shares/caches /auth/me briefly, so doing this per navigation is cheap and also
+  // picks up role changes.
   useEffect(() => {
     if (!hidden) void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [hidden, pathname, load]);
+
+  // React to the session changing underneath us (sign-in, sign-out, switching user): refresh the
+  // profile on sign-in and clear it on sign-out, so a different user never sees stale data.
+  useEffect(() => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') setMe(null);
+      else if (event === 'SIGNED_IN') void load();
+    });
+    return () => data.subscription.unsubscribe();
+  }, [load]);
 
   async function logout() {
     await getSupabase()

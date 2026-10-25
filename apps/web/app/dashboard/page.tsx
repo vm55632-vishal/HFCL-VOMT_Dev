@@ -2,7 +2,8 @@
 import Link from 'next/link';
 
 import { useCallback, useEffect, useState } from 'react';
-import { apiFetch, ApiError } from '../../lib/api';
+import { useRouter } from 'next/navigation';
+import { apiFetch, apiFetchSwr, ApiError } from '../../lib/api';
 import { SkeletonCards, SkeletonRows } from '../../components/Skeleton';
 import { Icon } from '../../components/icons';
 
@@ -17,13 +18,16 @@ interface Stats {
 }
 interface Me {
   name: string;
+  status?: string;
   roles: string[];
 }
 interface CaseRow {
   id: string;
   ref: string;
   legalName: string;
+  tradeName?: string;
   categoryKey: string;
+  subCategoryName?: string | null;
   stage: string;
   tier: string;
   onHold: boolean;
@@ -44,6 +48,7 @@ const STAGE_PROGRESS: Record<string, number> = {
   sap: 90,
   approved: 100,
   rejected: 100,
+  cancelled: 0,
 };
 
 // Parallel review roles that get a queue-scoped ("assigned to me for action") dashboard.
@@ -56,10 +61,11 @@ const ROLE_LABEL: Record<string, string> = {
   sap: 'SAP confirmation',
 };
 
-type StatusKind = 'approved' | 'rejected' | 'action' | 'progress';
+type StatusKind = 'approved' | 'rejected' | 'cancelled' | 'action' | 'progress';
 function statusOf(c: CaseRow): { kind: StatusKind; label: string } {
   if (c.stage === 'approved') return { kind: 'approved', label: 'Approved' };
   if (c.stage === 'rejected') return { kind: 'rejected', label: 'Rejected' };
+  if (c.stage === 'cancelled') return { kind: 'cancelled', label: 'Cancelled' };
   if (c.stage === 'infosec' || c.infosecRequired)
     return { kind: 'action', label: 'InfoSec review' };
   if (c.onHold) return { kind: 'action', label: 'Action required' };
@@ -68,6 +74,7 @@ function statusOf(c: CaseRow): { kind: StatusKind; label: string } {
 const STATUS_PILL: Record<StatusKind, string> = {
   approved: 'pill--ok',
   rejected: 'pill--danger',
+  cancelled: 'pill--draft',
   action: 'pill--warn',
   progress: 'pill--info',
 };
@@ -80,7 +87,32 @@ function prettyCategory(key: string): string {
     .join(' ');
 }
 
+/** Newest first; the proposer's overview only shows the latest six. */
+const sortRecent = (cases: CaseRow[], limit: boolean): CaseRow[] => {
+  const sorted = [...cases].sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
+  return limit ? sorted.slice(0, 6) : sorted;
+};
+
+// Which dashboard this person got last time: a reviewer role, or "none". Knowing it lets us ask for
+// the data in the same moment as "who am I" instead of one request after the other.
+const HINT_KEY = 'vop.dashboard-role';
+const readHint = (): string | null => {
+  try {
+    return sessionStorage.getItem(HINT_KEY);
+  } catch {
+    return null;
+  }
+};
+const saveHint = (role: string | null) => {
+  try {
+    sessionStorage.setItem(HINT_KEY, role ?? 'none');
+  } catch {
+    /* private mode: just no head start */
+  }
+};
+
 export default function Dashboard() {
+  const router = useRouter();
   const [s, setS] = useState<Stats | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [rows, setRows] = useState<CaseRow[] | null>(null);
@@ -89,30 +121,73 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const meRes = await apiFetch<Me>('/auth/me').catch(() => null);
+      // The dashboard is the landing page after sign-in, so it also has to cope with a visitor who
+      // isn't signed in (back to sign-in) or whose access is still awaiting approval.
+      const hint = readHint();
+      const guess = hint && hint !== 'none' ? hint : null;
+      const early = hint
+        ? {
+            role: guess,
+            stats: guess
+              ? null
+              : apiFetchSwr<Stats>('/stats/dashboard', (c) => setS(c)).then(
+                  (v) => ({ ok: true as const, v }),
+                  (e: unknown) => ({ ok: false as const, e }),
+                ),
+            cases: apiFetchSwr<CaseRow[]>(guess ? `/cases?queue=${guess}` : '/cases', (c) =>
+              setRows(sortRecent(c, !guess)),
+            ).catch(() => [] as CaseRow[]),
+          }
+        : null;
+      const meResult = await apiFetch<Me>('/auth/me').then(
+        (m) => ({ me: m, status: 200 }),
+        (err) => ({ me: null, status: err instanceof ApiError ? err.status : 0 }),
+      );
+      if (meResult.status === 401) {
+        router.replace('/sign-in');
+        return;
+      }
+      const meRes = meResult.me;
+      if (meRes?.status === 'PENDING_APPROVAL') {
+        router.replace('/pending');
+        return;
+      }
       setMe(meRes);
       const role = meRes?.roles.find((r) => STAGE_ROLES.includes(r)) ?? null;
+      saveHint(role);
       setQueueRole(role);
 
       if (role) {
         // Reviewer: the dashboard only shows cases assigned to them for action (their queue).
-        const cases = await apiFetch<CaseRow[]>(`/cases?queue=${role}`).catch(() => []);
-        setRows([...cases].sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)));
+        const cases =
+          early && early.role === role
+            ? await early.cases
+            : await apiFetch<CaseRow[]>(`/cases?queue=${role}`).catch(() => [] as CaseRow[]);
+        setRows(sortRecent(cases, false));
         setS(null);
       } else {
-        const [stats, cases] = await Promise.all([
-          apiFetch<Stats>('/stats/dashboard'),
-          apiFetch<CaseRow[]>('/cases').catch(() => []),
-        ]);
+        let stats: Stats;
+        let cases: CaseRow[];
+        if (early && early.role === null && early.stats) {
+          const first = await early.stats;
+          if (!first.ok) throw first.e;
+          stats = first.v;
+          cases = await early.cases;
+        } else {
+          [stats, cases] = await Promise.all([
+            apiFetchSwr<Stats>('/stats/dashboard', (c) => setS(c)),
+            apiFetchSwr<CaseRow[]>('/cases', (c) => setRows(sortRecent(c, true))).catch(
+              () => [] as CaseRow[],
+            ),
+          ]);
+        }
         setS(stats);
-        setRows(
-          [...cases].sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)).slice(0, 6),
-        );
+        setRows(sortRecent(cases, true));
       }
     } catch (err) {
       setMsg(err instanceof ApiError ? err.message : 'Failed to load.');
     }
-  }, []);
+  }, [router]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -184,12 +259,13 @@ export default function Dashboard() {
             )}
           </p>
         ) : (
-          <div className="scroll-area">
-            <table className="tbl">
+          <div className="scroll-area scroll-area--x">
+            <table className="tbl tbl--inline">
               <thead>
                 <tr>
                   <th>Case ID</th>
-                  <th>Vendor name</th>
+                  <th>Legal name of the business</th>
+                  <th>Trade name</th>
                   <th>Category</th>
                   <th>Submitted on</th>
                   <th>Status</th>
@@ -210,7 +286,8 @@ export default function Dashboard() {
                         </Link>
                       </td>
                       <td>{c.legalName}</td>
-                      <td className="muted">{prettyCategory(c.categoryKey)}</td>
+                      <td>{c.tradeName || <span className="muted">{'—'}</span>}</td>
+                      <td className="muted">{c.subCategoryName || '—'}</td>
                       <td className="muted">
                         {new Date(c.createdAt).toLocaleDateString('en-IN', {
                           day: '2-digit',

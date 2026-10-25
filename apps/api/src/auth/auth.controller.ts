@@ -136,7 +136,7 @@ export class AuthController {
 
     if (result.status === 'active') {
       this.sessions.setCookie(res, result.token);
-      res.redirect(`${this.config.api.publicUrl}/console`);
+      res.redirect(`${this.config.api.publicUrl}/dashboard`);
     } else {
       res.redirect(`${this.config.api.publicUrl}/pending`);
     }
@@ -148,7 +148,7 @@ export class AuthController {
   @Get('saml/login')
   @ApiOperation({ summary: 'Begin SAML login (redirects to the IdP)' })
   async samlLogin(@Res() res: Response): Promise<void> {
-    const url = await this.saml.getAuthorizeUrl(`${this.config.api.publicUrl}/console`);
+    const url = await this.saml.getAuthorizeUrl(`${this.config.api.publicUrl}/dashboard`);
     res.redirect(url);
   }
 
@@ -169,7 +169,7 @@ export class AuthController {
     );
     if (result.status === 'active') {
       this.sessions.setCookie(res, result.token);
-      res.redirect(`${this.config.api.publicUrl}/console`);
+      res.redirect(`${this.config.api.publicUrl}/dashboard`);
     } else {
       res.redirect(`${this.config.api.publicUrl}/pending`);
     }

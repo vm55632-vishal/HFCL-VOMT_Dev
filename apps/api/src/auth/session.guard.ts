@@ -16,6 +16,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { APP_CONFIG } from '../config/config.module';
 import { Inject } from '@nestjs/common';
 import { requestContext } from '../common/context';
+import { principalCache } from './principal-cache';
 import type { AuthUser, AuthedRequest } from './auth-user';
 
 /**
@@ -47,9 +48,19 @@ export class SessionGuard implements CanActivate {
     let userId: string;
     let sessionId: string;
 
+    let cacheToken: string | null = null;
     if (this.config.auth.driver === 'supabase') {
       const token = bearerToken(req.headers.authorization);
       if (!token) throw new UnauthorizedException('Authentication required.');
+
+      // Fast path: a recently resolved principal for this exact token (see principal-cache.ts).
+      const cached = principalCache.get(token);
+      if (cached) {
+        req.user = cached;
+        this.enrichContext(cached);
+        return true;
+      }
+      cacheToken = token;
       const resolved = await this.supabase.verifyAndResolve(token);
       if (!resolved) throw new UnauthorizedException('Session invalid or expired.');
       userId = resolved.userId;
@@ -89,14 +100,18 @@ export class SessionGuard implements CanActivate {
       sessionId,
     };
     req.user = principal;
+    if (cacheToken) principalCache.set(cacheToken, principal);
+    this.enrichContext(principal);
+    return true;
+  }
 
-    // Enrich the ambient context so logs and audit entries carry the actor.
+  /** Enrich the ambient context so logs and audit entries carry the actor. */
+  private enrichContext(principal: AuthUser): void {
     const ctx = requestContext.getStore();
     if (ctx) {
       ctx.userId = principal.id;
       ctx.role = principal.roles.join(',');
     }
-    return true;
   }
 }
 

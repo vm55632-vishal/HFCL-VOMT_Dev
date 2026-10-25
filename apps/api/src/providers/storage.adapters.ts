@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Client as MinioClient } from 'minio';
 import type { AppConfig } from '@vop/config';
 import type { StorageProvider } from './contracts';
@@ -114,6 +122,78 @@ export class MinioStorage implements StorageProvider {
   presignGet(key: string, ttlSeconds: number): Promise<string> {
     assertSafeKey(key);
     return this.client.presignedGetObject(this.bucket, key, ttlSeconds);
+  }
+}
+
+/**
+ * Cloudflare R2 storage — R2 exposes an S3-compatible API, so we drive it with the AWS S3 SDK v3
+ * (Cloudflare's recommended client; it signs requests the way R2 expects, unlike some MinIO-client
+ * quirks). Point `VOP_STORAGE_ENDPOINT` at the account S3 endpoint
+ * (https://<accountid>.r2.cloudflarestorage.com), set the access key id / secret from an R2 API
+ * token, keep `VOP_STORAGE_REGION=auto`, and name the bucket in `VOP_STORAGE_BUCKET`.
+ *
+ * Objects are stored under opaque, app-generated keys; downloads still stream through the
+ * authorized endpoint (DocumentsService.download), so access control + audit are never bypassed.
+ * presignGet is available for short-lived direct links where a deployment opts into them.
+ */
+export class R2Storage implements StorageProvider {
+  private readonly client: S3Client;
+  private readonly bucket: string;
+
+  constructor(config: AppConfig) {
+    const { storage } = config;
+    this.bucket = storage.bucket;
+    this.client = new S3Client({
+      // R2 ignores the region but the SDK requires one; "auto" is Cloudflare's documented value.
+      region: storage.region || 'auto',
+      endpoint: storage.endpoint,
+      credentials: {
+        accessKeyId: storage.accessKey ?? '',
+        secretAccessKey: storage.secretKey ?? '',
+      },
+    });
+  }
+
+  async put(key: string, data: Buffer, contentType: string): Promise<void> {
+    assertSafeKey(key);
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: data,
+        ContentType: contentType,
+        ContentLength: data.length,
+      }),
+    );
+  }
+
+  async get(key: string): Promise<Buffer> {
+    assertSafeKey(key);
+    const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    const bytes = await res.Body!.transformToByteArray();
+    return Buffer.from(bytes);
+  }
+
+  async remove(key: string): Promise<void> {
+    assertSafeKey(key);
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
+
+  async exists(key: string): Promise<boolean> {
+    assertSafeKey(key);
+    try {
+      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  presignGet(key: string, ttlSeconds: number): Promise<string> {
+    assertSafeKey(key);
+    return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
+      expiresIn: ttlSeconds,
+    });
   }
 }
 

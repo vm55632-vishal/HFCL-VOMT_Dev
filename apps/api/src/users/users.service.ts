@@ -4,6 +4,7 @@ import { RoleKey, UserStatus } from '@vop/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { SessionService } from '../auth/session.service';
+import { principalCache } from '../auth/principal-cache';
 
 const SAFE_SELECT = {
   id: true,
@@ -119,6 +120,7 @@ export class UsersService {
     });
 
     // Revoke sessions when authorization changed (role change or deactivation).
+    principalCache.invalidateUser(targetId);
     if (changingRoles || deactivating) {
       await this.sessions.revokeAllForUser(targetId);
     }
@@ -137,6 +139,7 @@ export class UsersService {
   }
 
   async forceLogout(targetId: string, actorId: string): Promise<{ revoked: number }> {
+    principalCache.invalidateUser(targetId);
     const revoked = await this.sessions.revokeAllForUser(targetId);
     await this.audit.append({
       action: 'user.force_logout',

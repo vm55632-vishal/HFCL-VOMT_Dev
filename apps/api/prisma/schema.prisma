@@ -5,9 +5,12 @@
 // UPDATE/DELETE from the app role and adds a guard trigger.
 
 generator client {
-  provider      = "prisma-client-js"
+  provider        = "prisma-client-js"
   // native = local dev; debian target = the distroless runtime image.
-  binaryTargets = ["native", "debian-openssl-3.0.x"]
+  binaryTargets   = ["native", "debian-openssl-3.0.x"]
+  // Lets a query load relations with SQL joins (relationLoadStrategy: 'join') in ONE round trip
+  // instead of one query per relation — significant against a remote database.
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {
@@ -256,6 +259,24 @@ model IntegrationToken {
   @@map("integration_token")
 }
 
+/// Runtime-editable object-storage configuration (single row, id = "default"). Lets an admin point
+/// the platform at a different bucket/provider (e.g. Cloudflare R2) without a redeploy. Any field
+/// left null falls back to the VOP_STORAGE_* env config. Security: the secret access key is
+/// envelope-encrypted at rest (`secret_key_enc`), never stored in plaintext, and masked on read.
+model StorageConfig {
+  id           String   @id @default("default")
+  driver       String
+  endpoint     String
+  bucket       String
+  region       String   @default("auto")
+  accessKeyId  String?  @map("access_key_id")
+  secretKeyEnc String?  @map("secret_key_enc")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedById  String?  @map("updated_by_id") @db.Char(26)
+
+  @@map("storage_config")
+}
+
 /// Cached third-party verification responses (EY PAN/GST/bank), to avoid repeat external API
 /// calls for the same identifier within the same scope and day. Security: the payload is
 /// envelope-encrypted at rest (PII — names, Aadhaar status, bank holder, address), and the
@@ -410,6 +431,12 @@ model Case {
   @@index([createdById])
   @@index([assigneeId])
   @@index([infosecRequired])
+  partners         PartnerDetail[]
+  vendorReferences VendorReference[]
+  rcLimits         RcLimit[]
+  teamStructure    CaseTeamStructure?
+  kycChecks        CaseKycCheck[]
+
   @@map("case")
 }
 
@@ -743,4 +770,169 @@ model CaseVerificationResponse {
   @@unique([caseId, kind])
   @@index([caseId])
   @@map("case_verification_response")
+}
+
+/// Management structure: one row per partner / director of the vendor, linked to the case. Personal
+/// data, so DOB, PAN, residence address and mobile are envelope-encrypted at rest (PAN also carries
+/// a blind index for duplicate / conflict checks). Rows are replaced wholesale when the proposer
+/// edits and resubmits the case.
+model PartnerDetail {
+  id                  String   @id @db.Char(26)
+  caseId              String   @map("case_id") @db.Char(26)
+  position            Int      @default(0)
+  name                String
+  dobEnc              String   @map("dob_enc")
+  maritalStatus       String   @map("marital_status")
+  gender              String
+  fatherName          String   @map("father_name")
+  spouseName          String?  @map("spouse_name")
+  panEnc              String   @map("pan_enc")
+  panBlindIndex       String   @map("pan_blind_index")
+  residenceAddressEnc String   @map("residence_address_enc")
+  mobileEnc           String   @map("mobile_enc")
+  pincode             String
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([panBlindIndex])
+  @@map("partner_details")
+}
+
+/// Trade references supplied by the proposer for a vendor (at least two are required to submit a
+/// case). One row per referee business, linked to the case.
+model VendorReference {
+  id                String   @id @db.Char(26)
+  caseId            String   @map("case_id") @db.Char(26)
+  position          Int      @default(0)
+  contactName       String   @map("contact_name")
+  businessName      String   @map("business_name")
+  registeredAddress String   @map("registered_address")
+  contactNumber     String   @map("contact_number")
+  email             String
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@map("vendor_references")
+}
+
+/// Revolving-credit (RC) limits the vendor holds with its financers. Optional; one row per financer.
+/// The amount is nullable so a half-filled draft row can be saved.
+model RcLimit {
+  id          String   @id @db.Char(26)
+  caseId      String   @map("case_id") @db.Char(26)
+  position    Int      @default(0)
+  financerName String  @map("financer_name")
+  rcLimit     Decimal? @map("rc_limit") @db.Decimal(18, 2)
+  // Derived on the server from numberOfVehicles x the per-vehicle limit (never taken from the client)
+  numberOfVehicles   Int?      @map("number_of_vehicles")
+  sanctionLoanLimit  Decimal?  @map("sanction_loan_limit") @db.Decimal(18, 2)
+  creditLimitFigures Decimal?  @map("credit_limit_figures") @db.Decimal(18, 2)
+  creditLimitWords   String?   @map("credit_limit_words")
+  remarks     String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@map("rc_limits")
+}
+
+/// Lookup of each proposer's approval / support team, keyed by the proposer's login email. Filled in
+/// by an administrator; the raise-case form reads it for the signed-in proposer. The proposer's name
+/// and email always come from the login, the rest from this table.
+model TeamStructureMaster {
+  id            String   @id @db.Char(26)
+  proposerEmail String   @unique @map("proposer_email")
+  proposerName  String   @map("proposer_name")
+  proposerDepartment   String? @map("proposer_department")
+  hodName              String? @map("hod_name")
+  hodEmail             String? @map("hod_email")
+  zonalManagerName     String? @map("zonal_manager_name")
+  zonalManagerEmail    String? @map("zonal_manager_email")
+  eyDdName             String? @map("ey_dd_name")
+  eyDdEmail            String? @map("ey_dd_email")
+  signatoryAName       String? @map("signatory_a_name")
+  signatoryAEmail      String? @map("signatory_a_email")
+  signatoryBName       String? @map("signatory_b_name")
+  signatoryBEmail      String? @map("signatory_b_email")
+  sapTeamName          String? @map("sap_team_name")
+  sapTeamEmail         String? @map("sap_team_email")
+  sfdcTeamEmail        String? @map("sfdc_team_email")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("team_structure_master")
+}
+
+/// The team structure as it was when the case was raised (a snapshot, so later master changes do not
+/// rewrite history). Copied from team_structure_master on the server at submission.
+model CaseTeamStructure {
+  id        String   @id @db.Char(26)
+  caseId    String   @unique @map("case_id") @db.Char(26)
+  proposerName         String? @map("proposer_name")
+  proposerEmail        String? @map("proposer_email")
+  proposerDepartment   String? @map("proposer_department")
+  hodName              String? @map("hod_name")
+  hodEmail             String? @map("hod_email")
+  zonalManagerName     String? @map("zonal_manager_name")
+  zonalManagerEmail    String? @map("zonal_manager_email")
+  eyDdName             String? @map("ey_dd_name")
+  eyDdEmail            String? @map("ey_dd_email")
+  signatoryAName       String? @map("signatory_a_name")
+  signatoryAEmail      String? @map("signatory_a_email")
+  signatoryBName       String? @map("signatory_b_name")
+  signatoryBEmail      String? @map("signatory_b_email")
+  sapTeamName          String? @map("sap_team_name")
+  sapTeamEmail         String? @map("sap_team_email")
+  sfdcTeamEmail        String? @map("sfdc_team_email")
+  // Fields the proposer changed from the master for this case (audit trail of the override)
+  overriddenFields     Json?    @map("overridden_fields")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@map("case_team_structure")
+}
+
+/// The people who can be chosen for each role on the team structure (HOD, zonal manager, EY DD, HFCL
+/// signatories, SAP and SFDC teams). The form shows each role as an email dropdown; the name follows
+/// from the chosen email. Maintained by an administrator.
+model TeamDirectory {
+  id        String   @id @db.Char(26)
+  roleKey   String   @map("role_key")
+  name      String
+  email     String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([roleKey, email])
+  @@index([roleKey])
+  @@map("team_directory")
+}
+
+/// One row per KYC / risk check run on a case's authorised signatory (Digi KYC, Hunter, IXSite,
+/// CRIF / CIBIL). The four rows are created when the run is initiated and advance one after another.
+model CaseKycCheck {
+  id            String    @id @db.Char(26)
+  caseId        String    @map("case_id") @db.Char(26)
+  checkKey      String    @map("check_key")
+  status        String    @default("pending") // pending | in_progress | passed | failed
+  providerRef   String?   @map("provider_ref")
+  summary       String?
+  initiatedById String?   @map("initiated_by_id") @db.Char(26)
+  initiatedAt   DateTime? @map("initiated_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, checkKey])
+  @@index([caseId])
+  @@map("case_kyc_check")
 }

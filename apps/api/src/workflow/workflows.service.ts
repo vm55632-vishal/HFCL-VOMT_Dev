@@ -7,8 +7,10 @@ import {
   type WorkflowDefinition,
   type WorkflowStageDef,
 } from '@vop/shared';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { TtlCache } from '../common/ttl-cache';
 
 export interface StagePermInput {
   roleKey: string;
@@ -85,13 +87,24 @@ export function buildDefinition(wf: {
 const stageInclude = {
   stages: { include: { permissions: true }, orderBy: { order: 'asc' as const } },
 };
+type WorkflowWithStages = Prisma.WorkflowDefinitionGetPayload<{ include: typeof stageInclude }>;
 
 @Injectable()
 export class WorkflowsService {
+  // Hot read-path caches (published definition per key, and a definition per key@version). Writers
+  // call invalidate() so admin edits/publishes show up immediately; the TTL bounds staleness.
+  private readonly published = new TtlCache<WorkflowWithStages>(15_000);
+  private readonly byVersion = new TtlCache<WorkflowWithStages>(15_000);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
   ) {}
+
+  private invalidate(): void {
+    this.published.clear();
+    this.byVersion.clear();
+  }
 
   list() {
     return this.prisma.workflowDefinition.findMany({
@@ -111,12 +124,14 @@ export class WorkflowsService {
 
   /** The currently published version of a workflow key (used to execute cases in Phase 3). */
   async getPublished(key: string) {
-    const wf = await this.prisma.workflowDefinition.findFirst({
-      where: { key, status: 'PUBLISHED' },
-      include: stageInclude,
+    return this.published.get(key, async () => {
+      const wf = await this.prisma.workflowDefinition.findFirst({
+        where: { key, status: 'PUBLISHED' },
+        include: stageInclude,
+      });
+      if (!wf) throw new NotFoundException(`No published workflow "${key}".`);
+      return wf;
     });
-    if (!wf) throw new NotFoundException(`No published workflow "${key}".`);
-    return wf;
   }
 
   /** The built engine definition for the currently published version of a key. */
@@ -126,11 +141,14 @@ export class WorkflowsService {
 
   /** The built engine definition for a specific version (an in-flight case keeps its version). */
   async definitionFor(key: string, version: number): Promise<WorkflowDefinition> {
-    const wf = await this.prisma.workflowDefinition.findUnique({
-      where: { key_version: { key, version } },
-      include: stageInclude,
+    const wf = await this.byVersion.get(`${key}@${version}`, async () => {
+      const found = await this.prisma.workflowDefinition.findUnique({
+        where: { key_version: { key, version } },
+        include: stageInclude,
+      });
+      if (!found) throw new NotFoundException(`Workflow "${key}" v${version} not found.`);
+      return found;
     });
-    if (!wf) throw new NotFoundException(`Workflow "${key}" v${version} not found.`);
     return buildDefinition(wf);
   }
 
@@ -159,6 +177,7 @@ export class WorkflowsService {
       },
       include: stageInclude,
     });
+    this.invalidate();
     await this.audit.append({
       action: 'workflow.create_draft',
       entityType: 'WorkflowDefinition',
@@ -187,6 +206,7 @@ export class WorkflowsService {
         },
       }),
     ]);
+    this.invalidate();
     await this.audit.append({
       action: 'workflow.update_draft',
       entityType: 'WorkflowDefinition',
@@ -220,6 +240,7 @@ export class WorkflowsService {
         data: { status: 'PUBLISHED', publishedAt: new Date() },
       }),
     ]);
+    this.invalidate();
     await this.audit.append({
       action: 'workflow.publish',
       entityType: 'WorkflowDefinition',
@@ -237,6 +258,7 @@ export class WorkflowsService {
       where: { id },
       data: { status: 'ARCHIVED' },
     });
+    this.invalidate();
     await this.audit.append({
       action: 'workflow.archive',
       entityType: 'WorkflowDefinition',

@@ -3,6 +3,7 @@ import { newId } from '@vop/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { evaluateRegistrationApproval } from '../authz/sod';
+import { principalCache } from '../auth/principal-cache';
 
 const EXPIRY_DAYS = 7;
 const daysFromNow = (d: number, from = Date.now()): Date => new Date(from + d * 86_400_000);
@@ -161,6 +162,7 @@ export class RegistrationService {
           roles: { set: roleKeys.map((key) => ({ key })) },
         },
       });
+      principalCache.invalidateUser(req.userId);
       await this.prisma.registrationRequest.update({
         where: { id: requestId },
         data: {

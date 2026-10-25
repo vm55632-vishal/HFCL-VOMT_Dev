@@ -21,6 +21,7 @@ import { DocumentsModule } from './documents/documents.module';
 import { VerificationModule } from './verification/verification.module';
 import { ReportingModule } from './reporting/reporting.module';
 import { LifecycleModule } from './lifecycle/lifecycle.module';
+import { KycModule } from './kyc/kyc.module';
 import { SessionGuard } from './auth/session.guard';
 import { PermissionsGuard } from './authz/permissions.guard';
 
@@ -49,6 +50,7 @@ import { PermissionsGuard } from './authz/permissions.guard';
     VerificationModule,
     ReportingModule,
     LifecycleModule,
+    KycModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
