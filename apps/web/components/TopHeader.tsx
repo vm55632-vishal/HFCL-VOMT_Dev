@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Icon } from './icons';
+import EntitySwitcher from './EntitySwitcher';
 
 // Section title shown in the top bar, derived from the current route.
 const TITLES: { prefix: string; label: string }[] = [
@@ -14,6 +15,7 @@ const TITLES: { prefix: string; label: string }[] = [
   { prefix: '/admin/access-requests', label: 'Access requests' },
   { prefix: '/admin/roles', label: 'Role management' },
   { prefix: '/admin/users', label: 'User management' },
+  { prefix: '/admin/companies', label: 'Companies' },
   { prefix: '/admin/categories', label: 'Vendor categories' },
   { prefix: '/admin/workflows', label: 'Workflows' },
   { prefix: '/console', label: 'My access' },
@@ -33,6 +35,7 @@ export default function TopHeader() {
     <header className="appheader">
       <span className="appheader__title">{title}</span>
       <div className="appheader__actions">
+        <EntitySwitcher />
         <button className="iconbtn" aria-label="Notifications" type="button">
           <Icon name="bell" size={20} />
           <span className="iconbtn__dot" />

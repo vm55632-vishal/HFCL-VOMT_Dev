@@ -43,6 +43,7 @@ const ADMIN: Item[] = [
   { href: '/admin/access-requests', label: 'Access requests', icon: <Icon name="userplus" /> },
   { href: '/admin/roles', label: 'Role management', icon: <Icon name="key" /> },
   { href: '/admin/users', label: 'User management', icon: <Icon name="users" /> },
+  { href: '/admin/companies', label: 'Companies', icon: <Icon name="building" /> },
   { href: '/admin/categories', label: 'Vendor categories', icon: <Icon name="tag" /> },
   { href: '/admin/workflows', label: 'Workflows', icon: <Icon name="flow" /> },
 ];

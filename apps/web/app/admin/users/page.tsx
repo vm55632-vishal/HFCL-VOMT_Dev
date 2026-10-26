@@ -13,6 +13,19 @@ interface UserRow {
   name: string;
   status: string;
   roles: { key: string; label: string }[];
+  entityRoles: { roleKey: string; role: { label: string }; entity: { code: string } }[];
+}
+
+/** "Group: Auditor · HFCL: Proposer, FCU · HHFL: Proposer" */
+function describeRoles(u: UserRow): string {
+  const parts: string[] = [];
+  if (u.roles.length) parts.push(`Group: ${u.roles.map((r) => r.label).join(', ')}`);
+  const codes = [...new Set(u.entityRoles.map((r) => r.entity.code))];
+  for (const code of codes) {
+    const labels = u.entityRoles.filter((r) => r.entity.code === code).map((r) => r.role.label);
+    parts.push(`${code}: ${labels.join(', ')}`);
+  }
+  return parts.join(' · ') || '-';
 }
 
 export default function UserManagement() {
@@ -114,7 +127,7 @@ export default function UserManagement() {
                       {u.status}
                     </span>
                   </td>
-                  <td>{u.roles.map((r) => r.label).join(', ') || '-'}</td>
+                  <td>{describeRoles(u)}</td>
                   <td>
                     <div className="req__actions" style={{ justifyContent: 'flex-end' }}>
                       {canManage &&

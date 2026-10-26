@@ -7,6 +7,7 @@ import { apiFetch, ApiError } from '../../../lib/api';
 interface PendingReq {
   id: string;
   requestedRoles: string[];
+  entity: { code: string; name: string } | null;
   justification: string;
   user: { id: string; name: string; email: string; department: string | null };
 }
@@ -73,7 +74,8 @@ export default function AccessRequests() {
               <strong>{r.user.name}</strong> <span className="muted">{r.user.email}</span>
               {r.user.department && <span className="muted"> · {r.user.department}</span>}
               <div className="muted" style={{ marginTop: 2 }}>
-                Requests: {r.requestedRoles.join(', ') || '-'}
+                Requests: {r.requestedRoles.join(', ') || '-'} · Company:{' '}
+                {r.entity ? r.entity.name : 'not specified'}
               </div>
               {r.justification && <div className="faint">“{r.justification}”</div>}
             </div>
