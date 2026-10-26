@@ -91,6 +91,7 @@ interface CapturedResponse {
   payloadEnc: string;
   verified: boolean;
   status: string | null;
+  identifierBlindIndex?: string | null;
 }
 
 /** Strip identifiers a reviewer doesn't need from a captured registry response. */
@@ -526,9 +527,22 @@ export class CasesService {
       bankAccount?: string | null;
       ifsc?: string | null;
     },
+    opts: { skipUnchanged?: boolean } = {},
   ): Promise<void> {
     const scope = `user:${actor.id}`;
+    // Autosave calls this on every save: skip what is already stored for the same number.
+    const stored = opts.skipUnchanged
+      ? new Map(
+          (
+            await this.prisma.caseVerificationResponse.findMany({
+              where: { caseId },
+              select: { kind: true, identifierBlindIndex: true },
+            })
+          ).map((r) => [r.kind, r.identifierBlindIndex]),
+        )
+      : null;
     const save = async (kind: VerificationKind, identifier: string, cacheKey: string) => {
+      if (stored && stored.get(kind) === this.blind.index(identifier)) return;
       try {
         const hit = await this.verificationCache.get<Record<string, unknown>>(
           scope,
@@ -670,10 +684,18 @@ export class CasesService {
             string,
             unknown
           >;
+          const currentIndex =
+            r.kind === 'gst'
+              ? g.gstinBlindIndex
+              : r.kind === 'bank'
+                ? g.bankBlindIndex
+                : g.panBlindIndex;
           registry[r.kind] = {
             verified: r.verified,
             status: r.status,
             ...sanitiseRegistry(r.kind, payload),
+            // False when the PAN / GSTIN / account changed after this result was captured.
+            current: !!r.identifierBlindIndex && r.identifierBlindIndex === currentIndex,
           };
         } catch {
           /* an undecryptable payload is simply omitted */
@@ -1592,6 +1614,7 @@ export class CasesService {
         },
       },
     });
+    await this.captureDraftLookups(id, actor, input);
     await this.audit.append({
       action: 'case.draft_create',
       entityType: 'Case',
@@ -1654,7 +1677,24 @@ export class CasesService {
         },
       },
     });
+    await this.captureDraftLookups(id, actor, input);
     return { id, ref: c.ref, savedAt: new Date().toISOString() };
+  }
+
+  /** Keep the PAN / GST / bank / MSME results shown on the form with the draft (never masked echoes). */
+  private captureDraftLookups(id: string, actor: AuthUser, input: DraftInput): Promise<void> {
+    const real = (v?: string) => (v && !v.includes('\u2022') ? v.trim() : null);
+    return this.captureResponses(
+      id,
+      actor,
+      {
+        pan: real(input.pan),
+        gstin: real(input.gstin),
+        bankAccount: real(input.bankAccount),
+        ifsc: real(input.ifsc),
+      },
+      { skipUnchanged: true },
+    );
   }
 
   /** Discard a draft the proposer no longer wants (drafts only; submitted cases are never deleted). */
@@ -2015,7 +2055,14 @@ export class CasesService {
         legalStage: true,
         sapStage: true,
         responses: {
-          select: { kind: true, payloadEnc: true, verified: true, status: true, capturedAt: true },
+          select: {
+            kind: true,
+            payloadEnc: true,
+            verified: true,
+            status: true,
+            capturedAt: true,
+            identifierBlindIndex: true,
+          },
         },
       },
     });

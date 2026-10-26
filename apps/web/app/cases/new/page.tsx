@@ -298,6 +298,11 @@ function NewCaseInner() {
   const submittedRef = useRef(false);
   // A reopened draft keeps its GSTIN: choosing a PAN normally clears the GST selection.
   const pendingGstinRef = useRef<string | null>(null);
+  // Values whose registry results were restored from a saved draft. While a field still holds its
+  // restored value, its lookup is not re-run and its result is not cleared.
+  const restoredRef = useRef<{ pan?: string; gstin?: string; bank?: string }>({});
+  // The PAN the current PAN result belongs to. MSME is only looked up for that exact PAN.
+  const panResultFor = useRef<string | null>(null);
   const router = useRouter();
 
   const load = useCallback(async () => {
@@ -403,6 +408,55 @@ function NewCaseInner() {
           draftIdRef.current = editId;
           setDraftId(editId);
           pendingGstinRef.current = str(c.gstin);
+          // Show the registry results saved with the draft instead of calling the registries again.
+          // Only results captured for the numbers now on the draft are used.
+          type Saved = Record<string, unknown> & { current?: boolean };
+          const reg = (c.registry ?? {}) as Record<string, Saved | undefined>;
+          const cur = (k: string): Saved | undefined => (reg[k]?.current ? reg[k] : undefined);
+          const panNow = str(c.pan).trim().toUpperCase();
+          const savedPan = cur('pan');
+          let restoredPan = false;
+          if (savedPan && validatePan(panNow).valid) {
+            restoredPan = true;
+            restoredRef.current.pan = panNow;
+            panResultFor.current = panNow;
+            pendingGstinRef.current = null; // the GSTIN on the draft stays selected
+            setPanChk({ loading: false, result: savedPan as unknown as PanResult });
+            const gstinNow = str(c.gstin);
+            const listed = ((savedPan.gstins as { gstin?: string }[] | undefined) ?? []).some(
+              (g) => g.gstin === gstinNow,
+            );
+            if (gstinNow && !listed) setGstOther(true);
+            const savedMsme = cur('msme');
+            if (savedMsme) {
+              msmeFetchedFor.current = panNow; // restored: no need to ask again
+              setMsmeChk({
+                loading: false,
+                result: { ...savedMsme, pan: panNow } as unknown as MsmeResult,
+              });
+            }
+          }
+          const savedGst = cur('gst');
+          if (savedGst && c.gstin) {
+            restoredRef.current.gstin = str(c.gstin);
+            setGstChk({ loading: false, result: savedGst as unknown as GstResult });
+          }
+          const savedBank = cur('bank');
+          const acctNow = str(c.bankAccount).replace(/\s+/g, '');
+          const ifscNow = str(c.ifsc).trim().toUpperCase();
+          if (savedBank && acctNow && ifscNow && !acctNow.includes('\u2022')) {
+            restoredRef.current.bank = `${acctNow}|${ifscNow}`;
+            setBankChk({ loading: false, result: savedBank as unknown as BankResult });
+          }
+          // Reopen on the page the proposer was on (later pages need the PAN to be verified).
+          if (restoredPan) {
+            try {
+              const saved = Number(localStorage.getItem(`vop.draft-step.${editId}`));
+              if (saved > 0 && saved < STEPS.length) setStep(saved);
+            } catch {
+              /* storage blocked: start on the first page */
+            }
+          }
           return;
         }
         setKind('resubmit');
@@ -539,6 +593,10 @@ function NewCaseInner() {
   });
   // Drop any fetched profile when the selected GSTIN changes.
   useEffect(() => {
+    if (restoredRef.current.gstin !== undefined) {
+      if (restoredRef.current.gstin === f.gstin) return; // restored result, still current
+      restoredRef.current.gstin = undefined;
+    }
     setGstChk({ loading: false, result: null });
   }, [f.gstin]);
 
@@ -601,6 +659,12 @@ function NewCaseInner() {
   const msmeFetchedFor = useRef<string | null>(null);
   // Drop any fetched MSME profile when the PAN changes.
   useEffect(() => {
+    if (
+      restoredRef.current.pan !== undefined &&
+      restoredRef.current.pan === f.pan.trim().toUpperCase()
+    ) {
+      return; // restored result, still current
+    }
     setMsmeChk({ loading: false, result: null });
     msmeFetchedFor.current = null;
   }, [f.pan]);
@@ -638,6 +702,8 @@ function NewCaseInner() {
     // In edit mode the PAN comes back masked — don't auto-fetch MSME against a masked value.
     if (!validatePan(p).valid) return;
     if (msmeFetchedFor.current === p) return;
+    // The verified result on screen may still be for the previous PAN while the new one is checked.
+    if (panResultFor.current !== p) return;
     msmeFetchedFor.current = p;
     verifyMsme();
   }, [panVerified, panChk.loading, panErr, f.pan, verifyMsme]);
@@ -649,6 +715,11 @@ function NewCaseInner() {
   });
   // Drop any fetched profile when the account or IFSC changes.
   useEffect(() => {
+    const key = `${f.bankAccount.replace(/\s+/g, '')}|${f.ifsc.trim().toUpperCase()}`;
+    if (restoredRef.current.bank !== undefined) {
+      if (restoredRef.current.bank === key) return; // restored result, still current
+      restoredRef.current.bank = undefined;
+    }
     setBankChk({ loading: false, result: null });
   }, [f.bankAccount, f.ifsc]);
 
@@ -696,6 +767,10 @@ function NewCaseInner() {
       setPanChk({ loading: false, result: null });
       return;
     }
+    if (restoredRef.current.pan !== undefined) {
+      if (restoredRef.current.pan === p) return; // restored from the draft: no new lookup
+      restoredRef.current.pan = undefined;
+    }
     let cancelled = false;
     setPanChk({ loading: true, result: null });
     // New PAN -> reset any previous GST selection; the list is re-fetched for this PAN.
@@ -709,6 +784,7 @@ function NewCaseInner() {
       })
         .then((r) => {
           if (cancelled) return;
+          panResultFor.current = p;
           setPanChk({ loading: false, result: r });
           // Pre-fill legal name from the registry when the proposer hasn't typed one.
           if (r.name) setF((prev) => (prev.legalName ? prev : { ...prev, legalName: r.name! }));
@@ -914,6 +990,15 @@ function NewCaseInner() {
 
   // --- Multi-step form ---
   const [step, setStep] = useState(0);
+  // Remember the page per draft, so reopening a draft returns to it.
+  useEffect(() => {
+    if (!draftId) return;
+    try {
+      localStorage.setItem(`vop.draft-step.${draftId}`, String(step));
+    } catch {
+      /* storage blocked: the draft reopens on the first page */
+    }
+  }, [draftId, step]);
   const formRef = useRef<HTMLFormElement>(null);
 
   // Problems that must be fixed before leaving a step (beyond the browser's own required checks).
@@ -1602,7 +1687,11 @@ function NewCaseInner() {
                         />
                         <Detail
                           label="Account number"
-                          value={bankChk.result.details.accountNumber}
+                          value={
+                            bankChk.result.details.accountNumber?.includes('\u2022')
+                              ? f.bankAccount
+                              : bankChk.result.details.accountNumber
+                          }
                         />
                         <Detail label="IFSC" value={bankChk.result.details.ifsc} />
                         <Detail
