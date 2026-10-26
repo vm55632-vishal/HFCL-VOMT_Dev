@@ -187,6 +187,47 @@ const padRefs = (rows: RefRow[]): RefRow[] =>
     ? rows
     : [...rows, ...Array.from({ length: MIN_REFERENCES - rows.length }, () => ({ ...EMPTY_REF }))];
 
+// States and union territories, for the address of a vendor without GST registration.
+const INDIAN_STATES = [
+  'Andaman and Nicobar Islands',
+  'Andhra Pradesh',
+  'Arunachal Pradesh',
+  'Assam',
+  'Bihar',
+  'Chandigarh',
+  'Chhattisgarh',
+  'Dadra and Nagar Haveli and Daman and Diu',
+  'Delhi',
+  'Goa',
+  'Gujarat',
+  'Haryana',
+  'Himachal Pradesh',
+  'Jammu and Kashmir',
+  'Jharkhand',
+  'Karnataka',
+  'Kerala',
+  'Ladakh',
+  'Lakshadweep',
+  'Madhya Pradesh',
+  'Maharashtra',
+  'Manipur',
+  'Meghalaya',
+  'Mizoram',
+  'Nagaland',
+  'Odisha',
+  'Puducherry',
+  'Punjab',
+  'Rajasthan',
+  'Sikkim',
+  'Tamil Nadu',
+  'Telangana',
+  'Tripura',
+  'Uttar Pradesh',
+  'Uttarakhand',
+  'West Bengal',
+];
+const isIndia = (country: string) => !country.trim() || /^india$/i.test(country.trim());
+
 const initial = {
   references: padRefs([]),
   rcLimits: [] as RcRow[],
@@ -196,6 +237,10 @@ const initial = {
   legalName: '',
   tradeName: '',
   businessAddress: '',
+  addressCountry: 'India',
+  addressState: '',
+  addressCity: '',
+  addressPostalCode: '',
   contactName: '',
   contactEmail: '',
   contactPhone: '',
@@ -375,6 +420,10 @@ function NewCaseInner() {
             : [],
           tradeName: str(c.tradeName),
           businessAddress: str(c.businessAddress),
+          addressCountry: str(c.addressCountry) || 'India',
+          addressState: str(c.addressState),
+          addressCity: str(c.addressCity),
+          addressPostalCode: str(c.addressPostalCode),
           contactName: str(c.contactName),
           contactEmail: str(c.contactEmail),
           contactPhone: str(c.contactPhone),
@@ -586,6 +635,12 @@ function NewCaseInner() {
   // The PAN gates the rest of the form: nothing below it shows until the PAN is verified. In edit
   // mode the PAN was already verified when the case was raised, so the form is unlocked.
   const panVerified = panChk.result?.verified === true || panLocked;
+  // The PAN has no GST registration: the address can't come from the GST registry, so ask for it.
+  const noGst =
+    panVerified &&
+    !panChk.loading &&
+    !gstOther &&
+    (panLocked ? !f.gstin.trim() : gstList.length === 0);
   // --- GST -> full registry profile (EY serviceTypeId 30), on an explicit "Verify" click ---
   const [gstChk, setGstChk] = useState<{ loading: boolean; result: GstResult | null }>({
     loading: false,
@@ -634,6 +689,10 @@ function NewCaseInner() {
             legalName: r.details?.legalName || prev.legalName,
             tradeName: r.details?.tradeName || prev.tradeName,
             businessAddress: addr || prev.businessAddress,
+            addressCountry: 'India',
+            addressState: r.details?.state || prev.addressState,
+            addressCity: r.details?.city || prev.addressCity,
+            addressPostalCode: r.details?.pincode || prev.addressPostalCode,
           }));
         }
       })
@@ -1008,6 +1067,9 @@ function NewCaseInner() {
       if (panErr || gstErr || ifscErr) {
         return 'Fix the highlighted PAN / GST / IFSC fields before continuing.';
       }
+      if (gstList.length > 0 && !f.gstin.trim()) {
+        return "Select the vendor's GSTIN, or choose Other to enter one.";
+      }
     }
     if (n === 2) {
       if (sigPanErr || sigMobileErr || sigEmailErr) {
@@ -1123,6 +1185,9 @@ function NewCaseInner() {
       for (const k of [
         'tradeName',
         'businessAddress',
+        'addressState',
+        'addressCity',
+        'addressPostalCode',
         'contactName',
         'contactEmail',
         'contactPhone',
@@ -1470,6 +1535,111 @@ function NewCaseInner() {
                     ) : null}
                   </div>
                 </label>
+              )}
+
+              {noGst && (
+                <fieldset className="span2 noGst">
+                  <legend>Vendor address</legend>
+                  <p className="field-cap noGst__note">
+                    This PAN has no GST registration, so the address can&apos;t be fetched. Enter it
+                    as on the vendor&apos;s records.
+                  </p>
+                  <div className="grid2">
+                    <label className="span2">
+                      Legal name
+                      <input
+                        required
+                        maxLength={200}
+                        value={f.legalName}
+                        onChange={(e) => set('legalName', e.target.value)}
+                        autoComplete="organization"
+                      />
+                    </label>
+                    <label className="span2">
+                      Full address
+                      <textarea
+                        required
+                        maxLength={500}
+                        rows={2}
+                        value={f.businessAddress}
+                        onChange={(e) => set('businessAddress', e.target.value)}
+                        placeholder="Building, street, area"
+                        autoComplete="street-address"
+                      />
+                    </label>
+                    <label>
+                      Country
+                      <input
+                        required
+                        maxLength={100}
+                        value={f.addressCountry}
+                        onChange={(e) => set('addressCountry', e.target.value)}
+                        autoComplete="country-name"
+                      />
+                    </label>
+                    <label>
+                      State
+                      {isIndia(f.addressCountry) ? (
+                        <select
+                          required
+                          value={f.addressState}
+                          onChange={(e) => set('addressState', e.target.value)}
+                        >
+                          <option value="">Select state…</option>
+                          {f.addressState && !INDIAN_STATES.includes(f.addressState) && (
+                            <option value={f.addressState}>{f.addressState}</option>
+                          )}
+                          {INDIAN_STATES.map((st) => (
+                            <option key={st} value={st}>
+                              {st}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          required
+                          maxLength={100}
+                          value={f.addressState}
+                          onChange={(e) => set('addressState', e.target.value)}
+                          autoComplete="address-level1"
+                        />
+                      )}
+                    </label>
+                    <label>
+                      City
+                      <input
+                        required
+                        maxLength={100}
+                        value={f.addressCity}
+                        onChange={(e) => set('addressCity', e.target.value)}
+                        autoComplete="address-level2"
+                      />
+                    </label>
+                    <label>
+                      {isIndia(f.addressCountry) ? 'PIN code' : 'Postal code'}
+                      <input
+                        required
+                        value={f.addressPostalCode}
+                        onChange={(e) =>
+                          set(
+                            'addressPostalCode',
+                            isIndia(f.addressCountry)
+                              ? e.target.value.replace(/\D/g, '').slice(0, 6)
+                              : e.target.value.slice(0, 12),
+                          )
+                        }
+                        {...(isIndia(f.addressCountry)
+                          ? {
+                              inputMode: 'numeric' as const,
+                              pattern: '[1-9][0-9]{5}',
+                              title: 'PIN code must be 6 digits.',
+                            }
+                          : { pattern: '[A-Za-z0-9][A-Za-z0-9 \\-]{1,10}' })}
+                        autoComplete="postal-code"
+                      />
+                    </label>
+                  </div>
+                </fieldset>
               )}
 
               {panChk.result?.verified && panChk.result.fields && (

@@ -3899,3 +3899,19 @@ code {
     animation: none;
   }
 }
+
+/* vendor address, asked when the PAN has no GST registration */
+.noGst {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px 14px;
+  margin: 4px 0 0;
+  min-width: 0;
+}
+.noGst legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+.noGst__note {
+  margin: 0 0 10px;
+}

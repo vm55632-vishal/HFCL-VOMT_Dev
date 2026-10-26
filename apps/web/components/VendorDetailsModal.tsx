@@ -193,6 +193,10 @@ export default function VendorDetailsModal({
               <Field label="Legal name" value={data.legalName} />
               <Field label="Trade name" value={data.tradeName} />
               <Field label="Business address" value={data.businessAddress} wide />
+              <Field label="City" value={data.addressCity} />
+              <Field label="State" value={data.addressState} />
+              <Field label="Postal code" value={data.addressPostalCode} />
+              <Field label="Country" value={data.addressCountry} />
               <Group>Business SPOC</Group>
               <Field label="Contact person" value={data.contactName} />
               <Field label="Email" value={data.contactEmail} />

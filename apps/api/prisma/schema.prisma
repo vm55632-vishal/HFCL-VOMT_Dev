@@ -581,6 +581,11 @@ model CaseGeneral {
   legalName       String  @map("legal_name")
   tradeName       String? @map("trade_name")
   businessAddress String? @map("business_address")
+  // structured address: asked on the form when the PAN has no GST registration
+  addressCountry    String? @map("address_country")
+  addressState      String? @map("address_state")
+  addressCity       String? @map("address_city")
+  addressPostalCode String? @map("address_postal_code")
 
   // business single point of contact (SPOC)
   contactName  String? @map("contact_name")

@@ -16,6 +16,10 @@ export interface VendorDetailsData {
   legalName?: string;
   tradeName?: string | null;
   businessAddress?: string | null;
+  addressCountry?: string | null;
+  addressState?: string | null;
+  addressCity?: string | null;
+  addressPostalCode?: string | null;
   // tax / bank
   pan?: string | null;
   gstin?: string | null;

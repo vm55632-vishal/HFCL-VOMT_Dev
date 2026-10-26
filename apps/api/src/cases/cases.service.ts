@@ -217,6 +217,10 @@ export interface CaseCreateInput {
   legalName: string;
   tradeName?: string;
   businessAddress?: string;
+  addressCountry?: string;
+  addressState?: string;
+  addressCity?: string;
+  addressPostalCode?: string;
   contactName?: string;
   contactEmail?: string;
   contactPhone?: string;
@@ -409,6 +413,10 @@ export class CasesService {
       legalName: input.legalName,
       tradeName: input.tradeName ?? null,
       businessAddress: input.businessAddress ?? null,
+      addressCountry: input.addressCountry?.trim() || null,
+      addressState: input.addressState?.trim() || null,
+      addressCity: input.addressCity?.trim() || null,
+      addressPostalCode: input.addressPostalCode?.trim() || null,
       contactName: input.contactName ?? null,
       contactEmail: input.contactEmail ?? null,
       contactPhone: input.contactPhone ?? null,
@@ -1516,6 +1524,10 @@ export class CasesService {
       legalName: input.legalName?.trim() ?? '',
       tradeName: t(input.tradeName),
       businessAddress: t(input.businessAddress),
+      addressCountry: t(input.addressCountry),
+      addressState: t(input.addressState),
+      addressCity: t(input.addressCity),
+      addressPostalCode: t(input.addressPostalCode),
       contactName: t(input.contactName),
       contactEmail: t(input.contactEmail),
       contactPhone: t(input.contactPhone),
@@ -1792,6 +1804,10 @@ export class CasesService {
       legalName: input.legalName,
       tradeName: input.tradeName ?? null,
       businessAddress: input.businessAddress ?? null,
+      addressCountry: input.addressCountry?.trim() || null,
+      addressState: input.addressState?.trim() || null,
+      addressCity: input.addressCity?.trim() || null,
+      addressPostalCode: input.addressPostalCode?.trim() || null,
       contactName: input.contactName ?? null,
       contactEmail: input.contactEmail ?? null,
       contactPhone: input.contactPhone ?? null,

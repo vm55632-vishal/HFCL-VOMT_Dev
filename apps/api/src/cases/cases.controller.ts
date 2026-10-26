@@ -108,6 +108,10 @@ const draftSchema = z
     legalName: optStr(200),
     tradeName: optStr(200),
     businessAddress: optStr(500),
+    addressCountry: optStr(100),
+    addressState: optStr(100),
+    addressCity: optStr(100),
+    addressPostalCode: optStr(12),
     contactName: optStr(200),
     contactEmail: optStr(200),
     contactPhone: optStr(30),
@@ -192,6 +196,10 @@ const createSchema = z
     legalName: z.string().min(1),
     tradeName: z.string().optional(),
     businessAddress: z.string().max(500).optional(),
+    addressCountry: z.string().trim().max(100).optional(),
+    addressState: z.string().trim().max(100).optional(),
+    addressCity: z.string().trim().max(100).optional(),
+    addressPostalCode: z.string().trim().max(12).optional(),
     contactName: z.string().optional(),
     contactEmail: z.string().email().optional(),
     contactPhone: z.string().optional(),
@@ -255,6 +263,32 @@ const createSchema = z
         path: ['ifsc'],
         message: 'IFSC must be four letters, a zero, then six characters (e.g. HDFC0001234).',
       });
+    }
+    // No GST registration: the address is not available from the GST registry, so it must be given.
+    if (!v.gstin) {
+      const need = [
+        ['businessAddress', 'Enter the full address.'],
+        ['addressCountry', 'Enter the country.'],
+        ['addressState', 'Enter the state.'],
+        ['addressCity', 'Enter the city.'],
+        ['addressPostalCode', 'Enter the postal code.'],
+      ] as const;
+      for (const [k, message] of need) {
+        if (!v[k]?.trim()) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [k], message });
+      }
+    }
+    if (v.addressPostalCode) {
+      const india = !v.addressCountry || /^india$/i.test(v.addressCountry.trim());
+      const ok = india
+        ? /^[1-9]\d{5}$/.test(v.addressPostalCode)
+        : /^[A-Za-z0-9][A-Za-z0-9 -]{1,10}$/.test(v.addressPostalCode);
+      if (!ok) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['addressPostalCode'],
+          message: india ? 'PIN code must be 6 digits.' : 'Enter a valid postal code.',
+        });
+      }
     }
     if (v.signatoryPan && !validatePan(v.signatoryPan).valid) {
       ctx.addIssue({
