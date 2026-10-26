@@ -24,13 +24,14 @@ OWASP **ASVS L2**, OWASP **Top 10** / **API Top 10**, **ISO 27001** Annex A, **C
 
 ## Authorization
 
-| Control                                                 | Implemented in                                  | ASVS | OWASP    | ISO 27001 | Status |
-| ------------------------------------------------------- | ----------------------------------------------- | ---- | -------- | --------- | ------ |
-| Deny-by-default central policy guard on every endpoint  | `auth/session.guard`, `authz/permissions.guard` | 4.1  | A01      | A.5.15    | ✅ P1  |
-| Object-level authorization (anti-IDOR) + negative tests | `users.controller`, `users.controller.spec`     | 4.2  | API1/A01 | A.5.15    | ✅ P1  |
-| Non-sequential ids (ULID) in URLs                       | `packages/shared/ids`                           | 4.2  | API1     | —         | ✅ P0  |
-| Segregation of Duties (self-approval / reporting-chain) | `authz/sod`, `registration.service`             | 4.1  | A01      | A.5.3     | ✅ P1  |
-| Field-level visibility & masked-by-default              | `common/masking`                                | 4.3  | A01      | A.8.3     | 🚧 P0  |
+| Control                                                                                                          | Implemented in                                                                                      | ASVS     | OWASP    | ISO 27001     | Status |
+| ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | -------- | -------- | ------------- | ------ |
+| Deny-by-default central policy guard on every endpoint                                                           | `auth/session.guard`, `authz/permissions.guard`                                                     | 4.1      | A01      | A.5.15        | ✅ P1  |
+| Object-level authorization (anti-IDOR) + negative tests                                                          | `users.controller`, `users.controller.spec`                                                         | 4.2      | API1/A01 | A.5.15        | ✅ P1  |
+| Non-sequential ids (ULID) in URLs                                                                                | `packages/shared/ids`                                                                               | 4.2      | API1     | —             | ✅ P0  |
+| Segregation of Duties (self-approval / reporting-chain)                                                          | `authz/sod`, `registration.service`                                                                 | 4.1      | A01      | A.5.3         | ✅ P1  |
+| Company (entity) isolation: per-request company, central query scoping, cross-company negative checks (ADR-0008) | `auth/session.guard`, `auth/entity-access`, `prisma/entity-scope`, `scripts/check-entity-isolation` | 4.1, 4.2 | A01      | A.5.15, A.8.3 | ✅ ME  |
+| Field-level visibility & masked-by-default                                                                       | `common/masking`                                                                                    | 4.3      | A01      | A.8.3         | 🚧 P0  |
 
 ## Input / output
 

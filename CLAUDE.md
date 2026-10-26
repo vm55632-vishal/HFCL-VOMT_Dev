@@ -5,7 +5,7 @@ Running context for future sessions. Keep this current: stack, commands, convent
 ## What this is
 
 Enterprise **Vendor Onboarding Platform (VOP)** — security-first, cloud-agnostic (on-prem first),
-single-organisation. Built to pass InfoSec review / VAPT / audit. Full spec in `docs/BUILD_PROMPT.md`.
+multi-entity (one platform for every company in the group, e.g. Hero FinCorp and Hero Housing Finance; ADR-0008). Built to pass InfoSec review / VAPT / audit. Full spec in `docs/BUILD_PROMPT.md`.
 A lean reference prototype lives outside this repo at `../VOMT` — its `src/shared/*` domain logic
 (risk, workflow, schema, PAN/GST/IFSC validation) is being ported into `packages/shared`.
 
@@ -61,6 +61,16 @@ Copy `.env.example` to `.env` before running. Never commit `.env`.
 - **No hardcoded** secrets/URLs/tenant ids/credentials — everything via `packages/config` (env) or SecretsProvider.
 - **Never invent external API contracts.** Verification providers = interface + mock; real adapters are marked stubs with TODOs.
 - **Deny-by-default authorization** on every endpoint (central guard). UI hiding is never the control.
+- **Multi-entity (ADR-0008).** The browser sends the company as `X-VOP-Entity`; `SessionGuard`
+  resolves it (refuses one the user can't use) and computes roles for that company. A Prisma
+  middleware (`prisma/entity-scope.ts`) adds the company to every query on `Case`, case-owned tables
+  and team master/directory. **New case-owned model?** Add it to `CASE_OWNED_MODELS` (and a model
+  with its own `entityId` to `ENTITY_MODELS`), or it is not scoped. Group-wide roles (super admin,
+  platform admin, auditor) live on `users.roles`; all other roles are in `user_entity_role`.
+  Prove isolation with `corepack pnpm --filter @vop/api check:isolation`.
+- **Schema changes:** the dev DB has drift, so never run `prisma db push` (it wants to drop live
+  columns). Write an additive, idempotent SQL file under `apps/api/prisma/sql/` and apply it with
+  `prisma db execute --file <file> --schema prisma/schema.prisma`, then `prisma generate`.
 - **Object-level authz** everywhere (IDOR). Every guard has negative tests.
 - **Audit** every sensitive action (see `apps/api/src/audit`). Audit table is append-only + hash-chained; app DB role cannot UPDATE/DELETE it.
 - **Field encryption** (envelope, via KeyProvider) for PAN, bank account, personal identifiers. Blind index/hash for searchable encrypted fields.
@@ -77,8 +87,18 @@ Copy `.env.example` to `.env` before running. Never commit `.env`.
 - ADR-0005 Audit log = append-only + hash chain; least-privilege DB role.
 - ADR-0006 Field encryption = envelope (AES-256-GCM) + blind index (HMAC).
 - ADR-0007 Security-standard mapping: ISO 27001 + CERT-In + OWASP ASVS L2 + DPDP 2023.
+- ADR-0008 Multi-entity: one app + one DB; every case belongs to an entity; access enforced centrally.
 
 ## Phase status
+
+- **Multi-entity (group companies):** 🚧 on `feat/multi-entity` (ADR-0008). `entity` +
+  `user_entity_role` tables, `case.entity_id` (existing data backfilled to HFCL via
+  `apps/api/prisma/sql/0001-multi-entity.sql`), per-company team master/directory, company switcher
+  in the web header, per-company role management, Companies admin page. Entities seeded: HFCL (Hero
+  FinCorp, domain `vop.local` for dev) and HHFL (Hero Housing Finance, no domain yet). One shared
+  `VOMT-NNNNNN` case series. _Not yet:_ combined all-companies view for group roles, per-company
+  categories/workflows, Postgres RLS, per-company keys, a self-service access-request form (requests
+  still come from JIT/admin).
 
 - **Phase 0 (Foundation):** ✅ done — committed on `master` (scaffold, providers, config, Prisma base schema, audit, health, docker-compose, CI, ADRs).
 - **Phase 1 (Identity & Access):** ✅ done, merged to `master` — local + OIDC/SAML auth with JIT provisioning, self-registration + manager approval (SoD + expiry/escalation), deny-by-default RBAC guard with IDOR + negative tests, DB-backed sessions, brute-force protection, user-admin + web console.
