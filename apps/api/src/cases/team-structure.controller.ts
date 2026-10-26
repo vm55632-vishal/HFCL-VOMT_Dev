@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PERMISSIONS } from '@vop/shared';
 import { CurrentUser, type AuthUser } from '../auth/auth-user';
@@ -13,7 +13,14 @@ export class TeamStructureController {
   @Get('me')
   @RequirePermissions(PERMISSIONS.VendorCreate)
   @ApiOperation({ summary: "The signed-in proposer's team structure, from the master table" })
-  me(@CurrentUser() actor: AuthUser) {
-    return this.team.preview(actor);
+  me(@CurrentUser() actor: AuthUser, @Query('proposerId') proposerId?: string) {
+    return this.team.preview(actor, proposerId?.trim() || undefined);
+  }
+
+  @Get('proposers')
+  @RequirePermissions(PERMISSIONS.VendorCreate)
+  @ApiOperation({ summary: 'Proposers in this company a case can be raised for' })
+  proposers(@CurrentUser() actor: AuthUser) {
+    return this.team.proposers(actor);
   }
 }

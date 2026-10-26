@@ -11,6 +11,7 @@ import {
   type RiskInput,
 } from '@vop/shared';
 import { Prisma } from '@prisma/client';
+import { isCaseOwner } from '../cases/case-ownership';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { FieldEncryptionService } from '../crypto/field-encryption.service';
@@ -40,7 +41,7 @@ export class VerificationService {
     if (!c) throw new NotFoundException('Case not found.');
     if (
       !actor.permissions.has(PERMISSIONS.VendorReadAll) &&
-      c.createdById !== actor.id &&
+      !isCaseOwner(c, actor.id) &&
       c.assigneeId !== actor.id
     ) {
       throw new ForbiddenException('Not authorized for this case.');

@@ -436,6 +436,10 @@ model Case {
   teamStructure    CaseTeamStructure?
   kycChecks        CaseKycCheck[]
 
+  // The proposer this case was raised for, when someone else raised it (createdById is the raiser).
+  // Both are treated as the case owner.
+  onBehalfOfId String? @map("on_behalf_of_id") @db.Char(26)
+
   // ADR-0008: the group company this case belongs to
   entityId String @map("entity_id") @db.Char(26)
   entity   Entity @relation(fields: [entityId], references: [id])
@@ -445,6 +449,7 @@ model Case {
   @@index([assigneeId])
   @@index([infosecRequired])
   @@index([entityId, createdAt])
+  @@index([onBehalfOfId])
   @@map("case")
 }
 

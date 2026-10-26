@@ -29,9 +29,9 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 const LIST_ROOTS: Record<string, { noun: string; step: number }> = {
-  partners: { noun: 'Partner', step: 2 },
-  references: { noun: 'Reference', step: 2 },
-  rcLimits: { noun: 'RC limit', step: 2 },
+  partners: { noun: 'Partner', step: 3 },
+  references: { noun: 'Reference', step: 3 },
+  rcLimits: { noun: 'RC limit', step: 3 },
 };
 
 const STEP_BY_ROOT: Record<string, number> = {
@@ -46,7 +46,8 @@ const STEP_BY_ROOT: Record<string, number> = {
   bankAccount: 0,
   bankName: 0,
   branch: 0,
-  teamOverrides: 3,
+  teamOverrides: 1,
+  proposerId: 1,
 };
 
 const words = (key: string) =>
@@ -74,10 +75,10 @@ export function explainValidation(message: string): { text: string; step: number
       s = list.step;
     } else if (root === 'teamOverrides') {
       where = 'Team structure';
-      s = 3;
+      s = 1;
     } else {
       where = words(root);
-      s = STEP_BY_ROOT[root] ?? (/^(isec|signatory|contact)/.test(root) ? 1 : 0);
+      s = STEP_BY_ROOT[root] ?? (/^(isec|signatory|contact)/.test(root) ? 2 : 0);
     }
     if (step === null) step = s;
     const line = `• ${where}: ${issue}.`;

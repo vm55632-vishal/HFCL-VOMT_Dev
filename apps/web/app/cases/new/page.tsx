@@ -13,7 +13,11 @@ import {
 } from '@vop/shared';
 import { lookupIfsc } from '../../../lib/ifsc';
 import { LookupProgress } from '../../../components/LookupProgress';
-import { TeamStructureEditor, type TeamInfo } from '../../../components/TeamStructureEditor';
+import {
+  TeamStructureEditor,
+  type ProposerOption,
+  type TeamInfo,
+} from '../../../components/TeamStructureEditor';
 import { explainValidation } from '../../../lib/validation-errors';
 import { Icon } from '../../../components/icons';
 
@@ -235,9 +239,9 @@ const initial = {
 // `<div hidden={step !== n}>` panel) when more questions are introduced.
 const STEPS = [
   { title: 'Vendor & tax' },
+  { title: 'Team structure' },
   { title: 'Questionnaire' },
   { title: 'Management & references' },
-  { title: 'Team structure' },
 ];
 
 // InfoSec questionnaire — any "yes" routes the case to InfoSec review.
@@ -324,6 +328,8 @@ function NewCaseInner() {
           : [];
         const savedTeam = (c.teamStructure ?? {}) as Record<string, string>;
         setTeamOv(Object.fromEntries(changed.map((k) => [k, savedTeam[k] ?? ''])));
+        const forId = (c.onBehalfOfId as string | null) ?? (c.createdById as string | undefined);
+        if (forId) setProposerId(forId);
         setF((prev) => ({
           ...prev,
           categoryKey: str(c.categoryKey),
@@ -728,17 +734,38 @@ function NewCaseInner() {
 
   // Team structure comes from a master table, looked up for the signed-in proposer.
   const [teamInfo, setTeamInfo] = useState<TeamInfo | null>(null);
+  // Who the case is for. Empty = the signed-in person; another proposer = raising on their behalf.
+  const [proposerId, setProposerId] = useState('');
+  const proposerIdRef = useRef(proposerId);
+  proposerIdRef.current = proposerId;
+  const [proposers, setProposers] = useState<ProposerOption[]>([]);
   useEffect(() => {
     let cancelled = false;
-    void apiFetch<TeamInfo>('/team-structure/me')
+    void apiFetch<ProposerOption[]>('/team-structure/proposers')
       .then((r) => {
-        if (!cancelled) setTeamInfo(r);
+        if (!cancelled) setProposers(r);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, []);
+  useEffect(() => {
+    let cancelled = false;
+    setTeamInfo(null);
+    const q = proposerId ? `?proposerId=${encodeURIComponent(proposerId)}` : '';
+    void apiFetch<TeamInfo>(`/team-structure/me${q}`)
+      .then((r) => {
+        if (cancelled) return;
+        setTeamInfo(r);
+        // Show the proposer's real id in the dropdown, even for "me".
+        if (!proposerId && r.proposer) setProposerId(r.proposer.id);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [proposerId]);
 
   const fRef = useRef(f);
   fRef.current = f;
@@ -760,6 +787,7 @@ function NewCaseInner() {
     body.partners = cur.partners;
     body.references = cur.references;
     body.teamOverrides = teamOvRef.current;
+    if (proposerIdRef.current) body.proposerId = proposerIdRef.current;
     body.rcLimits = (cur.rcLimits as RcRow[]).map((r) => ({
       financerName: r.financerName,
       rcLimit: r.rcLimit === '' ? null : Number(r.rcLimit),
@@ -819,7 +847,7 @@ function NewCaseInner() {
     if (!hasContent && !draftIdRef.current) return;
     const t = setTimeout(() => void flushDraft(), 1000);
     return () => clearTimeout(t);
-  }, [kind, f, spocSame, teamOv, result, flushDraft]);
+  }, [kind, f, spocSame, teamOv, proposerId, result, flushDraft]);
 
   async function discardDraft() {
     const id = draftIdRef.current;
@@ -896,7 +924,7 @@ function NewCaseInner() {
         return 'Fix the highlighted PAN / GST / IFSC fields before continuing.';
       }
     }
-    if (n === 1) {
+    if (n === 2) {
       if (sigPanErr || sigMobileErr || sigEmailErr) {
         return 'Fix the highlighted signatory fields before continuing.';
       }
@@ -991,6 +1019,7 @@ function NewCaseInner() {
         pincode: p.pincode.trim(),
       }));
       payload.teamOverrides = teamOv;
+      if (proposerId) payload.proposerId = proposerId;
       payload.references = f.references.map((r) => ({
         contactName: r.contactName.trim(),
         businessName: r.businessName.trim(),
@@ -1631,6 +1660,44 @@ function NewCaseInner() {
           {panVerified && (
             <>
               <section className="card">
+                <h2>Team structure</h2>
+                <p className="section-intro">
+                  These are the people who support and approve this vendor. Each line is filled in
+                  from the team structure master for the proposer. To raise the case on a
+                  colleague&apos;s behalf, pick them as the proposer and their team loads. To use
+                  someone else for one role, pick their email and their name fills in. The master
+                  itself is not changed.
+                </p>
+                <TeamStructureEditor
+                  info={teamInfo}
+                  overrides={teamOv}
+                  onChange={setTeamOv}
+                  proposers={kind === 'resubmit' ? undefined : proposers}
+                  proposerId={proposerId}
+                  onProposerChange={(id) => {
+                    // A different proposer has a different team, so earlier changes no longer apply.
+                    setTeamOv({});
+                    setProposerId(id);
+                  }}
+                />
+              </section>
+
+              <div className="req__actions">
+                <button className="btn btn--ghost" type="button" onClick={() => goTo(0)}>
+                  Back
+                </button>
+                <button className="btn" type="button" onClick={() => goTo(2)}>
+                  Next
+                </button>
+                {draftControls}
+              </div>
+            </>
+          )}
+        </div>
+        <div data-step="2" hidden={step !== 2}>
+          {panVerified && (
+            <>
+              <section className="card">
                 <h2>Information security</h2>
                 <p className="section-intro">
                   If the vendor needs any IT access or access to systems, network, applications or
@@ -1770,10 +1837,10 @@ function NewCaseInner() {
               </section>
 
               <div className="req__actions">
-                <button className="btn btn--ghost" type="button" onClick={() => goTo(0)}>
+                <button className="btn btn--ghost" type="button" onClick={() => goTo(1)}>
                   Back
                 </button>
-                <button className="btn" type="button" onClick={() => goTo(2)}>
+                <button className="btn" type="button" onClick={() => goTo(3)}>
                   Next
                 </button>
                 {draftControls}
@@ -1782,7 +1849,7 @@ function NewCaseInner() {
           )}
         </div>
 
-        <div data-step="2" hidden={step !== 2}>
+        <div data-step="3" hidden={step !== 3}>
           {panVerified && (
             <>
               <section className="card">
@@ -2203,33 +2270,6 @@ function NewCaseInner() {
                     </span>
                   )}
                 </div>
-              </section>
-
-              <div className="req__actions">
-                <button className="btn btn--ghost" type="button" onClick={() => goTo(1)}>
-                  Back
-                </button>
-                <button className="btn" type="button" onClick={() => goTo(3)}>
-                  Next
-                </button>
-                {draftControls}
-              </div>
-            </>
-          )}
-        </div>
-
-        <div data-step="3" hidden={step !== 3}>
-          {panVerified && (
-            <>
-              <section className="card">
-                <h2>Team structure</h2>
-                <p className="section-intro">
-                  These are the people who support and approve this vendor. Each line is filled in
-                  from the team structure master for your login. To use someone else for this case,
-                  pick their email from the dropdown and their name fills in. The master itself is
-                  not changed.
-                </p>
-                <TeamStructureEditor info={teamInfo} overrides={teamOv} onChange={setTeamOv} />
               </section>
 
               <div className="req__actions">

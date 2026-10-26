@@ -6,8 +6,18 @@ export interface TeamPerson {
   name: string;
   email: string;
 }
+export interface ProposerOption {
+  id: string;
+  name: string;
+  email: string;
+}
+
 export interface TeamInfo {
   configured: boolean;
+  /** The proposer the team was loaded for. */
+  proposer?: ProposerOption;
+  /** True when the case is being raised on someone else's behalf. */
+  onBehalf?: boolean;
   team: Record<string, string | null>;
   /** Everyone who can be chosen for each role, keyed by role. */
   directory: Record<string, TeamPerson[]>;
@@ -22,10 +32,17 @@ export function TeamStructureEditor({
   info,
   overrides,
   onChange,
+  proposers,
+  proposerId,
+  onProposerChange,
 }: {
   info: TeamInfo | null;
   overrides: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
+  /** Proposers in this company; when given, the proposer can be changed to raise on their behalf. */
+  proposers?: ProposerOption[];
+  proposerId?: string;
+  onProposerChange?: (id: string) => void;
 }) {
   if (!info) return <p className="muted">Loading your team structure…</p>;
 
@@ -89,8 +106,10 @@ export function TeamStructureEditor({
           </strong>
           <span>
             {info.configured
-              ? `Matched to your login, ${base.proposerEmail ?? ''}. Choose a different email on any line to change it for this case.`
-              : 'Choose the email for each role below, and ask an administrator to add you to the master.'}
+              ? info.onBehalf
+                ? `Loaded for ${base.proposerName ?? ''} (${base.proposerEmail ?? ''}). You are raising this case on their behalf.`
+                : `Matched to your login, ${base.proposerEmail ?? ''}. Choose a different email on any line to change it for this case.`
+              : 'Choose the email for each role below, and ask an administrator to add this proposer to the master.'}
           </span>
         </div>
         {changedCount > 0 && (
@@ -108,11 +127,39 @@ export function TeamStructureEditor({
         </div>
 
         <div className="tsl__row">
-          <span className="tsl__label">
-            Proposer <em className="tsl__tag">From your login</em>
-          </span>
-          <span className="tsl__static">{base.proposerEmail || '—'}</span>
-          <span className="tsl__name">{base.proposerName || '—'}</span>
+          {proposers && proposers.length > 0 && onProposerChange ? (
+            <>
+              <label className="tsl__label" htmlFor="ts-proposer">
+                Proposer
+              </label>
+              <select
+                id="ts-proposer"
+                className="tsl__select"
+                value={proposerId ?? ''}
+                onChange={(e) => onProposerChange(e.target.value)}
+              >
+                {proposers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} · {p.email}
+                  </option>
+                ))}
+              </select>
+              <span className="tsl__name" aria-live="polite">
+                <span>{base.proposerName || '—'}</span>
+                <em className={`tsl__tag${info.onBehalf ? ' tsl__tag--edited' : ''}`}>
+                  {info.onBehalf ? 'On their behalf' : 'You'}
+                </em>
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="tsl__label">
+                Proposer <em className="tsl__tag">From your login</em>
+              </span>
+              <span className="tsl__static">{base.proposerEmail || '—'}</span>
+              <span className="tsl__name">{base.proposerName || '—'}</span>
+            </>
+          )}
         </div>
 
         <div className="tsl__row">

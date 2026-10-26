@@ -18,6 +18,7 @@ import {
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../auth/auth-user';
 import { FieldEncryptionService } from '../crypto/field-encryption.service';
+import { isCaseOwner } from '../cases/case-ownership';
 import { PrismaService } from '../prisma/prisma.service';
 import { KYC_PROVIDER, type KycProvider, type KycSubject } from '../providers/contracts';
 
@@ -26,6 +27,7 @@ interface CaseForKyc {
   ref: string;
   stage: string;
   createdById: string;
+  onBehalfOfId: string | null;
   assigneeId: string | null;
   general: {
     legalName: string;
@@ -72,6 +74,7 @@ export class KycService {
         ref: true,
         stage: true,
         createdById: true,
+        onBehalfOfId: true,
         assigneeId: true,
         general: {
           select: {
@@ -85,11 +88,11 @@ export class KycService {
       },
     });
     // A draft is private to its proposer.
-    if (!c || (c.stage === 'draft' && c.createdById !== actor.id)) {
+    if (!c || (c.stage === 'draft' && !isCaseOwner(c, actor.id))) {
       throw new NotFoundException('Case not found.');
     }
     const seeAll = actor.permissions.has(PERMISSIONS.VendorReadAll);
-    if (!seeAll && c.createdById !== actor.id && c.assigneeId !== actor.id) {
+    if (!seeAll && !isCaseOwner(c, actor.id) && c.assigneeId !== actor.id) {
       throw new ForbiddenException('Not authorized to view this case.');
     }
     return c;

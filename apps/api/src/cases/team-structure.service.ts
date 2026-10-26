@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { RoleKey, UserStatus } from '@vop/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/auth-user';
 
@@ -79,6 +80,13 @@ export const TEAM_ROLES: readonly TeamRole[] = [
   { role: 'sfdc_team', label: 'SFDC Team', name: null, email: 'sfdcTeamEmail' },
 ];
 
+/** The proposer a case is for: the signed-in person, or a colleague they raise it on behalf of. */
+export interface ProposerPerson {
+  id: string;
+  name: string;
+  email: string;
+}
+
 export interface DirectoryPerson {
   name: string;
   email: string;
@@ -95,27 +103,64 @@ export class TeamStructureService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** The proposer's team structure, or null when nothing is configured for their login. */
-  async forProposer(actor: AuthUser): Promise<TeamStructureFields | null> {
+  async forProposer(person: ProposerPerson): Promise<TeamStructureFields | null> {
     const m = await this.prisma.teamStructureMaster.findFirst({
-      where: { proposerEmail: { equals: actor.email.trim(), mode: 'insensitive' } },
+      where: { proposerEmail: { equals: person.email.trim(), mode: 'insensitive' } },
     });
     if (!m) return null;
     const out = {} as TeamStructureFields;
     for (const k of TEAM_FIELDS) out[k] = (m[k] as string | null) ?? null;
-    out.proposerName = actor.name;
-    out.proposerEmail = actor.email;
+    out.proposerName = person.name;
+    out.proposerEmail = person.email;
     return out;
   }
 
+  /** Active proposers in the signed-in user's company, for raising a case on someone's behalf. */
+  async proposers(actor: AuthUser): Promise<ProposerPerson[]> {
+    if (!actor.entityId) return [];
+    return this.prisma.user.findMany({
+      where: {
+        status: UserStatus.Active,
+        entityRoles: { some: { entityId: actor.entityId, roleKey: RoleKey.Proposer } },
+      },
+      select: { id: true, name: true, email: true },
+      orderBy: { name: 'asc' },
+      take: 500,
+    });
+  }
+
+  /**
+   * The proposer a case is for. Defaults to the signed-in person. Anyone else must be an active
+   * proposer in the same company; their name and email come from their account, never the browser.
+   */
+  async proposerFor(actor: AuthUser, proposerId?: string | null): Promise<ProposerPerson> {
+    if (!proposerId || proposerId === actor.id) {
+      return { id: actor.id, name: actor.name, email: actor.email };
+    }
+    if (!actor.entityId) throw new ForbiddenException('You do not have access to any company.');
+    const person = await this.prisma.user.findFirst({
+      where: {
+        id: proposerId,
+        status: UserStatus.Active,
+        entityRoles: { some: { entityId: actor.entityId, roleKey: RoleKey.Proposer } },
+      },
+      select: { id: true, name: true, email: true },
+    });
+    if (!person) {
+      throw new BadRequestException('Choose a proposer who is active in this company.');
+    }
+    return person;
+  }
+
   private async baseTeam(
-    actor: AuthUser,
+    person: ProposerPerson,
   ): Promise<{ configured: boolean; team: TeamStructureFields }> {
-    const team = await this.forProposer(actor);
+    const team = await this.forProposer(person);
     if (team) return { configured: true, team };
     const empty = {} as TeamStructureFields;
     for (const k of TEAM_FIELDS) empty[k] = null;
-    empty.proposerName = actor.name;
-    empty.proposerEmail = actor.email;
+    empty.proposerName = person.name;
+    empty.proposerEmail = person.email;
     return { configured: false, team: empty };
   }
 
@@ -134,8 +179,8 @@ export class TeamStructureService {
    * is chosen by email; the email must be in the directory for that role and the name is taken from
    * there. A choice equal to the master is ignored, and the genuinely changed fields are recorded.
    */
-  async resolve(actor: AuthUser, overrides?: TeamOverrides): Promise<TeamSnapshot> {
-    const { team: base } = await this.baseTeam(actor);
+  async resolve(person: ProposerPerson, overrides?: TeamOverrides): Promise<TeamSnapshot> {
+    const { team: base } = await this.baseTeam(person);
     const out = { ...base } as TeamStructureFields;
     const overridden: TeamField[] = [];
 
@@ -181,12 +226,18 @@ export class TeamStructureService {
   }
 
   /** What the form shows: the configured team, the people to choose from, and whether a team exists. */
-  async preview(actor: AuthUser): Promise<{
+  async preview(
+    actor: AuthUser,
+    proposerId?: string,
+  ): Promise<{
     configured: boolean;
     team: TeamStructureFields;
     directory: Record<string, DirectoryPerson[]>;
+    proposer: ProposerPerson;
+    onBehalf: boolean;
   }> {
-    const [base, directory] = await Promise.all([this.baseTeam(actor), this.directory()]);
-    return { ...base, directory };
+    const proposer = await this.proposerFor(actor, proposerId);
+    const [base, directory] = await Promise.all([this.baseTeam(proposer), this.directory()]);
+    return { ...base, directory, proposer, onBehalf: proposer.id !== actor.id };
   }
 }

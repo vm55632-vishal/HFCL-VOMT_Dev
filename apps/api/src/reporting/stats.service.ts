@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PERMISSIONS } from '@vop/shared';
+import { ownedBy } from '../cases/case-ownership';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/auth-user';
 
@@ -23,7 +24,7 @@ export class StatsService {
     // Drafts are unsubmitted work in progress, not part of the onboarding pipeline.
     const scope: Prisma.CaseWhereInput = {
       stage: { not: 'draft' },
-      ...(canAll ? {} : { OR: [{ createdById: actor.id }, { assigneeId: actor.id }] }),
+      ...(canAll ? {} : { OR: [...ownedBy(actor.id), { assigneeId: actor.id }] }),
     };
 
     const [total, byStageRaw, byTierRaw, overdue, active, reviewRequired] = await Promise.all([

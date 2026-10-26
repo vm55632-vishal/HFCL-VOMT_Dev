@@ -148,6 +148,7 @@ const draftSchema = z
     references: z.array(draftReferenceSchema).max(10).optional(),
     rcLimits: z.array(draftRcLimitSchema).max(20).optional(),
     teamOverrides: teamOverridesSchema.optional(),
+    proposerId: z.string().trim().min(1).max(40).optional(),
   })
   .strict();
 
@@ -186,6 +187,7 @@ const createSchema = z
     references: z.array(referenceSchema).min(2, 'At least two references are required.').max(10),
     rcLimits: z.array(rcLimitSchema).max(20).optional(),
     teamOverrides: teamOverridesSchema.optional(),
+    proposerId: z.string().trim().min(1).max(40).optional(),
     subCategoryKey: z.string().optional(),
     legalName: z.string().min(1),
     tradeName: z.string().optional(),

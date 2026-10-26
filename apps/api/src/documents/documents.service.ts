@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { ALLOWED_MIME, detectFileType, newId, PERMISSIONS } from '@vop/shared';
 import type { AppConfig } from '@vop/config';
 import { APP_CONFIG } from '../config/config.module';
+import { isCaseOwner } from '../cases/case-ownership';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import {
@@ -54,11 +55,11 @@ export class DocumentsService {
   private async caseAndAuthz(actor: AuthUser, caseId: string): Promise<void> {
     const c = await this.prisma.case.findUnique({
       where: { id: caseId },
-      select: { createdById: true, assigneeId: true },
+      select: { createdById: true, onBehalfOfId: true, assigneeId: true },
     });
     if (!c) throw new NotFoundException('Case not found.');
     if (actor.permissions.has(PERMISSIONS.VendorReadAll)) return;
-    if (c.createdById === actor.id || c.assigneeId === actor.id) return;
+    if (isCaseOwner(c, actor.id) || c.assigneeId === actor.id) return;
     throw new ForbiddenException('Not authorized for this case.');
   }
 

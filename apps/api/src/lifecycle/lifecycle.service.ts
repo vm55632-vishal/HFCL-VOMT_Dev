@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { caseOwnerIds } from '../cases/case-ownership';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from './notifications.service';
@@ -40,12 +41,14 @@ export class LifecycleService {
       actorId: actor.id,
       detail: { reason },
     });
-    await this.notifications.notify(
-      c.createdById,
-      'vendor.blocked',
-      `Vendor ${c.general?.legalName ?? c.ref} (${c.ref}) has been blocked.`,
-      `/cases/${caseId}`,
-    );
+    for (const owner of caseOwnerIds(c)) {
+      await this.notifications.notify(
+        owner,
+        'vendor.blocked',
+        `Vendor ${c.general?.legalName ?? c.ref} (${c.ref}) has been blocked.`,
+        `/cases/${caseId}`,
+      );
+    }
     return { vendorStatus: 'BLOCKED' };
   }
 
@@ -62,12 +65,14 @@ export class LifecycleService {
       actorId: actor.id,
       detail: { reason },
     });
-    await this.notifications.notify(
-      c.createdById,
-      'vendor.reactivated',
-      `Vendor ${c.general?.legalName ?? c.ref} (${c.ref}) has been reactivated.`,
-      `/cases/${caseId}`,
-    );
+    for (const owner of caseOwnerIds(c)) {
+      await this.notifications.notify(
+        owner,
+        'vendor.reactivated',
+        `Vendor ${c.general?.legalName ?? c.ref} (${c.ref}) has been reactivated.`,
+        `/cases/${caseId}`,
+      );
+    }
     return { vendorStatus: 'ACTIVE' };
   }
 }

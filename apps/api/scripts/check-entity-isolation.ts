@@ -119,7 +119,10 @@ async function main() {
     const hhflList = await as(hhfl.id, () => svc.list(hhflActor, {}));
     check(
       'HHFL case list shows only HHFL cases',
-      hhflList.length === 1 && hhflList[0]?.id === other.id,
+      hhflList.some((c) => c.id === other.id) &&
+        (await prisma.case.count({
+          where: { id: { in: hhflList.map((c) => c.id) }, entityId: { not: hhfl.id } },
+        })) === 0,
     );
     const bulk = await as(hfcl.id, () =>
       svc.bulk(hfclActor, 'hold', [other.id], 'cross-entity attempt'),

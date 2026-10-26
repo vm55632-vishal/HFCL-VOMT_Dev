@@ -45,6 +45,7 @@ import {
 import type { AuthUser } from '../auth/auth-user';
 import { TeamStructureService, TEAM_FIELDS, type TeamOverrides } from './team-structure.service';
 import { STORAGE_PROVIDER, type StorageProvider } from '../providers/contracts';
+import { caseOwnerIds, isCaseOwner, ownedBy } from './case-ownership';
 
 /** Workflow stage keys that have their own per-stage reporting table. */
 type StageTable = 'draft' | 'infosec' | 'fcu' | 'operation' | 'sap' | 'legal';
@@ -209,6 +210,8 @@ export interface CaseCreateInput {
   rcLimits?: RcLimitInput[];
   /** Team-structure fields the proposer changed from the master (applied on the server). */
   teamOverrides?: TeamOverrides;
+  /** Raise the case for this proposer (same company). Defaults to the signed-in person. */
+  proposerId?: string;
   subCategoryKey?: string;
   legalName: string;
   tradeName?: string;
@@ -325,10 +328,10 @@ export class CasesService {
 
   private assertCanSee(
     actor: AuthUser,
-    c: { createdById: string; assigneeId: string | null },
+    c: { createdById: string; assigneeId: string | null; onBehalfOfId?: string | null },
   ): void {
     if (this.canSeeAll(actor)) return;
-    if (c.createdById === actor.id || c.assigneeId === actor.id) return;
+    if (isCaseOwner(c, actor.id) || c.assigneeId === actor.id) return;
     throw new ForbiddenException('Not authorized to view this case.');
   }
 
@@ -843,6 +846,8 @@ export class CasesService {
 
   async create(actor: AuthUser, input: CaseCreateInput) {
     const entityId = this.requireEntity(actor);
+    const proposer = await this.team.proposerFor(actor, input.proposerId);
+    const onBehalfOfId = proposer.id === actor.id ? null : proposer.id;
     const panIdx = input.pan ? this.blind.index(input.pan) : null;
     const gstIdx = input.gstin ? this.blind.index(input.gstin) : null;
     const bankIdx = input.bankAccount ? this.blind.index(input.bankAccount) : null;
@@ -856,7 +861,7 @@ export class CasesService {
       this.nextRef(),
       this.buildGeneralData(input),
       this.buildPartnerRows(input.partners),
-      this.team.resolve(actor, input.teamOverrides),
+      this.team.resolve(proposer, input.teamOverrides),
       // The new case doesn't exist yet, so it can't match itself — no exclusion needed.
       this.detectDuplicates({
         pan: panIdx,
@@ -895,6 +900,7 @@ export class CasesService {
           id,
           ref,
           entityId,
+          onBehalfOfId,
           categoryKey: input.categoryKey,
           subCategoryKey: input.subCategoryKey ?? null,
           workflowKey: published.key,
@@ -949,6 +955,7 @@ export class CasesService {
           duplicateFlags: duplicates.length,
           infosecRequired,
           teamOverridden: teamRow.overriddenFields,
+          ...(onBehalfOfId ? { onBehalfOf: proposer.email } : {}),
         },
       },
       { after: caseCreated },
@@ -1213,12 +1220,14 @@ export class CasesService {
 
     if (phase === 'approved') {
       await this.erp.activate(id);
-      await this.notifications.notify(
-        c.createdById,
-        'case.approved',
-        `Vendor ${c.general?.legalName ?? c.ref} (${c.ref}) has been confirmed in SAP and activated.`,
-        `/cases/${id}`,
-      );
+      for (const owner of caseOwnerIds(c)) {
+        await this.notifications.notify(
+          owner,
+          'case.approved',
+          `Vendor ${c.general?.legalName ?? c.ref} (${c.ref}) has been confirmed in SAP and activated.`,
+          `/cases/${id}`,
+        );
+      }
     }
     await this.audit.append({
       action: `case.sap_${decision}`,
@@ -1264,19 +1273,20 @@ export class CasesService {
         stage: true,
         onHold: true,
         createdById: true,
+        onBehalfOfId: true,
         assigneeId: true,
         infosecRequired: true,
         erpRef: true,
       },
     });
     // A draft is private to its proposer.
-    if (!c || (c.stage === 'draft' && c.createdById !== actor.id)) {
+    if (!c || (c.stage === 'draft' && !isCaseOwner(c, actor.id))) {
       throw new NotFoundException('Case not found.');
     }
     this.assertCanSee(actor, c);
 
     const isAdmin = actor.permissions.has(PERMISSIONS.WorkflowManage);
-    const mayManage = c.createdById === actor.id || isAdmin;
+    const mayManage = isCaseOwner(c, actor.id) || isAdmin;
     const mayPause = mayManage || actor.permissions.has(PERMISSIONS.WorkflowStageApprove);
     const finished = CLOSED_STAGES.includes(c.stage);
     const reason = note?.trim() ?? '';
@@ -1543,13 +1553,14 @@ export class CasesService {
   /** Create a draft case (stage "draft"). Visible only to its proposer until it is submitted. */
   async createDraft(actor: AuthUser, input: DraftInput) {
     const entityId = this.requireEntity(actor);
+    const proposer = await this.team.proposerFor(actor, input.proposerId);
     await this.assertSubCategory(input);
     const [category, ref, general, partnerRows, teamRow] = await Promise.all([
       this.categories.get(input.categoryKey),
       this.nextRef(),
       this.draftGeneral(input),
       this.buildPartnerRows(input.partners),
-      this.team.resolve(actor, input.teamOverrides),
+      this.team.resolve(proposer, input.teamOverrides),
     ]);
     const published = await this.workflows.getPublished(category.workflowKey);
     const id = newId();
@@ -1558,6 +1569,7 @@ export class CasesService {
         id,
         ref,
         entityId,
+        onBehalfOfId: proposer.id === actor.id ? null : proposer.id,
         categoryKey: input.categoryKey,
         subCategoryKey: input.subCategoryKey || null,
         workflowKey: published.key,
@@ -1593,10 +1605,10 @@ export class CasesService {
   private async ownDraft(actor: AuthUser, id: string) {
     const c = await this.prisma.case.findUnique({
       where: { id },
-      select: { id: true, ref: true, stage: true, createdById: true },
+      select: { id: true, ref: true, stage: true, createdById: true, onBehalfOfId: true },
     });
-    // A draft is private to its proposer, so anyone else is told it does not exist.
-    if (!c || c.createdById !== actor.id) throw new NotFoundException('Case not found.');
+    // A draft is private to its owners, so anyone else is told it does not exist.
+    if (!c || !isCaseOwner(c, actor.id)) throw new NotFoundException('Case not found.');
     if (c.stage !== 'draft') {
       throw new BadRequestException('Only a draft can be saved this way. Submit changes instead.');
     }
@@ -1607,11 +1619,16 @@ export class CasesService {
   async updateDraftContent(actor: AuthUser, id: string, input: DraftInput) {
     const c = await this.ownDraft(actor, id);
     await this.assertSubCategory(input);
+    // Keep the draft's proposer unless the form chose a different one.
+    const proposer = await this.team.proposerFor(
+      actor,
+      input.proposerId ?? c.onBehalfOfId ?? c.createdById,
+    );
     const [category, general, partnerRows, teamRow] = await Promise.all([
       this.categories.get(input.categoryKey),
       this.draftGeneral(input),
       this.buildPartnerRows(input.partners),
-      this.team.resolve(actor, input.teamOverrides),
+      this.team.resolve(proposer, input.teamOverrides),
     ]);
     const published = await this.workflows.getPublished(category.workflowKey);
     await this.prisma.case.update({
@@ -1622,6 +1639,7 @@ export class CasesService {
         workflowKey: published.key,
         workflowVersion: published.version,
         lastUpdatedById: actor.id,
+        onBehalfOfId: proposer.id === c.createdById ? null : proposer.id,
         partners: { deleteMany: {}, create: partnerRows },
         vendorReferences: { deleteMany: {}, create: this.buildReferenceRows(input.references) },
         rcLimits: { deleteMany: {}, create: this.buildRcLimitRows(input.rcLimits) },
@@ -1661,8 +1679,8 @@ export class CasesService {
   async updateDraft(actor: AuthUser, id: string, input: CaseCreateInput) {
     const c = await this.prisma.case.findUnique({ where: { id } });
     if (!c) throw new NotFoundException('Case not found.');
-    if (c.createdById !== actor.id) {
-      throw new ForbiddenException('Only the proposer who raised this case can edit it.');
+    if (!isCaseOwner(c, actor.id)) {
+      throw new ForbiddenException('Only the proposer of this case can edit it.');
     }
     if (CLOSED_STAGES.includes(c.stage)) {
       throw new BadRequestException('This case is closed and can no longer be edited.');
@@ -1777,7 +1795,12 @@ export class CasesService {
       general.signatoryPanBlindIndex = this.blind.index(input.signatoryPan as string);
     }
 
-    const teamRow = await this.team.resolve(actor, input.teamOverrides);
+    // Keep the case's proposer unless the form chose a different one.
+    const proposer = await this.team.proposerFor(
+      actor,
+      input.proposerId ?? c.onBehalfOfId ?? c.createdById,
+    );
+    const teamRow = await this.team.resolve(proposer, input.teamOverrides);
 
     // The case may have been created before case_general existed; upsert to be safe.
     await this.prisma.case.update({
@@ -1792,6 +1815,7 @@ export class CasesService {
         riskScore: risk.score,
         infosecRequired,
         lastUpdatedById: actor.id,
+        onBehalfOfId: proposer.id === c.createdById ? null : proposer.id,
         ...(isDraft
           ? {
               submittedAt: new Date(),
@@ -1889,9 +1913,9 @@ export class CasesService {
   ) {
     const where: Record<string, unknown> = {
       // Drafts are private work in progress: only the proposer who started one sees it.
-      AND: [{ OR: [{ stage: { not: 'draft' } }, { createdById: actor.id }] }],
+      AND: [{ OR: [{ stage: { not: 'draft' } }, ...ownedBy(actor.id)] }],
     };
-    if (!this.canSeeAll(actor)) where.OR = [{ createdById: actor.id }, { assigneeId: actor.id }];
+    if (!this.canSeeAll(actor)) where.OR = [...ownedBy(actor.id), { assigneeId: actor.id }];
     // A stage queue (?queue=fcu|operation|legal|infosec) lists cases awaiting that parallel review;
     // ?queue=sap lists cases at the SAP confirmation gate.
     if (filters.queue) {
@@ -1995,7 +2019,7 @@ export class CasesService {
         },
       },
     });
-    if (!c || (c.stage === 'draft' && c.createdById !== actor.id)) {
+    if (!c || (c.stage === 'draft' && !isCaseOwner(c, actor.id))) {
       throw new NotFoundException('Case not found.');
     }
     this.assertCanSee(actor, c);
@@ -2025,7 +2049,7 @@ export class CasesService {
     const result = evaluateTransition(def, c.stage, action, {
       tier: c.tier as TierKey,
       isStageOwner,
-      isCaseOwner: c.createdById === actor.id,
+      isCaseOwner: isCaseOwner(c, actor.id),
       onHold: c.onHold,
       checklistOutstanding: outstanding,
     });
@@ -2088,12 +2112,14 @@ export class CasesService {
     // On activation: push to ERP (idempotent stub) and notify the proposer.
     if (toStage === 'approved' && c.stage !== 'approved') {
       await this.erp.activate(id);
-      await this.notifications.notify(
-        c.createdById,
-        'case.approved',
-        `Vendor ${c.general?.legalName ?? c.ref} (${c.ref}) has been approved and activated.`,
-        `/cases/${id}`,
-      );
+      for (const owner of caseOwnerIds(c)) {
+        await this.notifications.notify(
+          owner,
+          'case.approved',
+          `Vendor ${c.general?.legalName ?? c.ref} (${c.ref}) has been approved and activated.`,
+          `/cases/${id}`,
+        );
+      }
     }
     return { id, stage: toStage, onHold: data.onHold ?? c.onHold };
   }
@@ -2101,7 +2127,7 @@ export class CasesService {
   async comment(actor: AuthUser, id: string, body: string) {
     const c = await this.prisma.case.findUnique({
       where: { id },
-      select: { createdById: true, assigneeId: true },
+      select: { createdById: true, onBehalfOfId: true, assigneeId: true },
     });
     if (!c) throw new NotFoundException('Case not found.');
     this.assertCanSee(actor, c);
@@ -2120,7 +2146,7 @@ export class CasesService {
   async tickChecklist(actor: AuthUser, id: string, itemId: string, done: boolean) {
     const c = await this.prisma.case.findUnique({
       where: { id },
-      select: { createdById: true, assigneeId: true },
+      select: { createdById: true, onBehalfOfId: true, assigneeId: true },
     });
     if (!c) throw new NotFoundException('Case not found.');
     this.assertCanSee(actor, c);
