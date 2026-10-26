@@ -27,7 +27,7 @@ const FINISHED = ['approved', 'rejected', 'cancelled'];
 
 /** Which selected cases each action can apply to. The server re-checks every case. */
 const APPLIES: Record<ServerAction, (r: BulkRow) => boolean> = {
-  cancel: (r) => r.stage === 'review' || r.stage === 'sap',
+  cancel: (r) => ['review', 'l1', 'l2', 'l3', 'sap'].includes(r.stage),
   reopen: (r) => r.stage === 'rejected' || r.stage === 'cancelled',
   hold: (r) => r.stage !== 'draft' && !FINISHED.includes(r.stage) && !r.onHold,
   resume: (r) => r.onHold && !FINISHED.includes(r.stage),

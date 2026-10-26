@@ -20,6 +20,9 @@ const STAGE_LABELS: Record<string, string> = {
   fcu: 'FCU',
   operation: 'Operation',
   legal: 'Legal',
+  l1: 'L1 approval',
+  l2: 'L2 approval',
+  l3: 'L3 approval',
   sap: 'SAP confirmation',
 };
 
@@ -28,7 +31,10 @@ const STAGE_BLURB: Record<string, string> = {
   fcu: 'Submitted cases awaiting your fraud-control review.',
   operation: 'Submitted cases awaiting your operations review.',
   legal: 'Submitted cases awaiting your legal review and agreement drafting.',
-  sap: 'Cases where every parallel review is approved — confirm them into SAP/ERP.',
+  l1: 'Cases whose reviews are complete, awaiting your L1 approval.',
+  l2: 'Cases awaiting your L2 approval (after L1, where the category uses it).',
+  l3: 'Cases awaiting your L3 approval, the last step before SAP confirmation.',
+  sap: 'Cases where every review and approval is complete — confirm them into SAP/ERP.',
 };
 
 export default function StageQueue() {

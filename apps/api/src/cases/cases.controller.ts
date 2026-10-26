@@ -16,6 +16,8 @@ import {
   PERMISSIONS,
   WORKFLOW_ACTIONS,
   REVIEW_STAGES,
+  isApprovalLevel,
+  type ApprovalLevel,
   type ReviewStage,
   validatePan,
   validateGstin,
@@ -453,7 +455,8 @@ export class CasesController {
   @Post(':id/stage/:stage/decision')
   @RequirePermissions(PERMISSIONS.WorkflowStageApprove)
   @ApiOperation({
-    summary: 'Parallel stage decision (InfoSec/FCU/Operation/Legal): approve/reject/sendback',
+    summary:
+      'Stage decision (InfoSec/FCU/Operation/Legal, or approval level l1/l2/l3): approve/reject/sendback',
   })
   stageDecision(
     @CurrentUser() actor: AuthUser,
@@ -461,13 +464,20 @@ export class CasesController {
     @Param('stage') stage: string,
     @Body(new ZodValidationPipe(stageDecisionSchema)) body: z.infer<typeof stageDecisionSchema>,
   ) {
-    if (!REVIEW_STAGES.includes(stage as ReviewStage)) {
+    if (!REVIEW_STAGES.includes(stage as ReviewStage) && !isApprovalLevel(stage)) {
       throw new BadRequestException('Unknown review stage.');
     }
-    return this.cases.stageDecision(actor, id, stage as ReviewStage, body.decision, body.note, {
-      agreement: body.agreement,
-      fcu: body.fcu,
-    });
+    return this.cases.stageDecision(
+      actor,
+      id,
+      stage as ReviewStage | ApprovalLevel,
+      body.decision,
+      body.note,
+      {
+        agreement: body.agreement,
+        fcu: body.fcu,
+      },
+    );
   }
 
   @Post(':id/sap-decision')

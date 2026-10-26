@@ -16,7 +16,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "check:isolation": "ts-node scripts/check-entity-isolation.ts"
+    "check:isolation": "ts-node scripts/check-entity-isolation.ts",
+    "check:levels": "ts-node scripts/check-approval-levels.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

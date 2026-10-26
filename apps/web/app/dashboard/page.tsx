@@ -45,6 +45,9 @@ const STAGE_PROGRESS: Record<string, number> = {
   risk: 55,
   finance: 75,
   approval: 90,
+  l1: 70,
+  l2: 78,
+  l3: 85,
   sap: 90,
   approved: 100,
   rejected: 100,
@@ -52,12 +55,15 @@ const STAGE_PROGRESS: Record<string, number> = {
 };
 
 // Parallel review roles that get a queue-scoped ("assigned to me for action") dashboard.
-const STAGE_ROLES = ['infosec', 'fcu', 'operation', 'legal', 'sap'];
+const STAGE_ROLES = ['infosec', 'fcu', 'operation', 'legal', 'l1', 'l2', 'l3', 'sap'];
 const ROLE_LABEL: Record<string, string> = {
   infosec: 'InfoSec',
   fcu: 'FCU',
   operation: 'Operation',
   legal: 'Legal',
+  l1: 'L1',
+  l2: 'L2',
+  l3: 'L3',
   sap: 'SAP confirmation',
 };
 

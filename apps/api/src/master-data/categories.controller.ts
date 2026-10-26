@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
-import { PERMISSIONS } from '@vop/shared';
+import { APPROVAL_LEVELS, PERMISSIONS } from '@vop/shared';
 import { CurrentUser, type AuthUser } from '../auth/auth-user';
 import { RequirePermissions } from '../authz/permissions.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
@@ -17,6 +17,8 @@ const createSchema = z
     requiredDocuments: z.array(z.string()).optional(),
     requiredValidations: z.array(z.string()).optional(),
     workflowKey: z.string().min(1),
+    // Approval levels this category's cases run after the reviews (none = straight to SAP).
+    approvalLevels: z.array(z.enum(APPROVAL_LEVELS)).max(APPROVAL_LEVELS.length).optional(),
   })
   .strict();
 type CreateBody = z.infer<typeof createSchema>;

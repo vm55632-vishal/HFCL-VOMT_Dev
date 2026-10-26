@@ -3915,3 +3915,75 @@ code {
 .noGst__note {
   margin: 0 0 10px;
 }
+
+/* approval levels (L1 -> L2 -> L3) between the parallel reviews and SAP */
+.prv__levels {
+  flex: none;
+  width: 220px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.prv__levelshead {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.prv__level {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+.prv__level.is-current {
+  border-color: #f4ca7a;
+  background: #fffaf0;
+}
+.prv__levelmain {
+  min-width: 0;
+}
+.prv__levelmeta {
+  font-size: 0.8rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 720px) {
+  .prv__levels {
+    width: auto;
+  }
+}
+
+/* approval-level switches on the categories admin */
+.lvl-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin: 0;
+}
+.lvl-pick legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+.lvl-toggles {
+  display: flex;
+  gap: 12px;
+  white-space: nowrap;
+}
+.lvl-toggles label,
+.lvl-pick label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

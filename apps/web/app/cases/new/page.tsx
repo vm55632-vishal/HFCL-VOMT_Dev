@@ -516,6 +516,9 @@ function NewCaseInner() {
           ['fcu', 'FCU'],
           ['operation', 'Operation'],
           ['legal', 'Legal'],
+          ['l1', 'L1 approver'],
+          ['l2', 'L2 approver'],
+          ['l3', 'L3 approver'],
         ];
         const stages = (c.stages ?? {}) as Record<
           string,

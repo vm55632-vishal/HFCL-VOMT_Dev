@@ -2,6 +2,7 @@
 import Link from 'next/link';
 
 import { useCallback, useEffect, useState } from 'react';
+import { APPROVAL_LEVELS } from '@vop/shared';
 import { apiFetch, ApiError } from '../../../lib/api';
 
 interface Category {
@@ -14,6 +15,8 @@ interface Category {
   requiredDocuments: string[];
   requiredValidations: string[];
   workflowKey: string;
+  /** Approval levels (l1/l2/l3) this category's cases run after the reviews. */
+  approvalLevels: string[];
 }
 
 const empty = {
@@ -22,6 +25,7 @@ const empty = {
   description: '',
   workflowKey: 'standard-vendor',
   enhancedDueDiligence: false,
+  approvalLevels: [] as string[],
 };
 
 export default function CategoriesAdmin() {
@@ -52,6 +56,7 @@ export default function CategoriesAdmin() {
           description: form.description,
           workflowKey: form.workflowKey,
           enhancedDueDiligence: form.enhancedDueDiligence,
+          approvalLevels: form.approvalLevels,
         }),
       });
       setForm({ ...empty });
@@ -60,6 +65,28 @@ export default function CategoriesAdmin() {
     } catch (err) {
       setMsg(err instanceof Error ? err.message : 'Create failed.');
     }
+  }
+
+  // Switch one approval level on or off for a category. Cases already submitted keep their levels.
+  async function toggleLevel(cat: Category, level: string) {
+    const on = cat.approvalLevels.includes(level);
+    const next = on
+      ? cat.approvalLevels.filter((l) => l !== level)
+      : [...cat.approvalLevels, level];
+    setMsg(null);
+    setRows((rs) => rs.map((r) => (r.key === cat.key ? { ...r, approvalLevels: next } : r)));
+    try {
+      await apiFetch(`/categories/${cat.key}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ approvalLevels: next }),
+      });
+      setMsg(
+        `${cat.name}: ${level.toUpperCase()} approval ${on ? 'turned off' : 'turned on'}. Applies to cases submitted from now on.`,
+      );
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'Update failed.');
+    }
+    await load();
   }
 
   async function toggle(cat: Category) {
@@ -128,6 +155,29 @@ export default function CategoriesAdmin() {
             />
             Enhanced due diligence
           </label>
+          <fieldset className="span2 lvl-pick">
+            <legend>Approval levels after the reviews</legend>
+            {APPROVAL_LEVELS.map((l) => (
+              <label key={l} className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={form.approvalLevels.includes(l)}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      approvalLevels: e.target.checked
+                        ? [...form.approvalLevels, l]
+                        : form.approvalLevels.filter((x) => x !== l),
+                    })
+                  }
+                />
+                {l.toUpperCase()}
+              </label>
+            ))}
+            <span className="field-cap">
+              None ticked: cases go straight from the reviews to SAP.
+            </span>
+          </fieldset>
           <button className="btn span2" type="submit">
             Create category
           </button>
@@ -144,6 +194,7 @@ export default function CategoriesAdmin() {
                 <th>Key</th>
                 <th>Workflow</th>
                 <th>Flags</th>
+                <th>Approval levels</th>
                 <th>Status</th>
                 <th />
               </tr>
@@ -161,6 +212,24 @@ export default function CategoriesAdmin() {
                   <td>{c.workflowKey}</td>
                   <td>
                     {c.enhancedDueDiligence ? <span className="pill">enhanced DD</span> : '-'}
+                  </td>
+                  <td>
+                    <div
+                      className="lvl-toggles"
+                      role="group"
+                      aria-label={`Approval levels for ${c.name}`}
+                    >
+                      {APPROVAL_LEVELS.map((l) => (
+                        <label key={l} className="checkbox">
+                          <input
+                            type="checkbox"
+                            checked={(c.approvalLevels ?? []).includes(l)}
+                            onChange={() => void toggleLevel(c, l)}
+                          />
+                          {l.toUpperCase()}
+                        </label>
+                      ))}
+                    </div>
                   </td>
                   <td>
                     <span className="pill">{c.active ? 'active' : 'inactive'}</span>

@@ -3,6 +3,7 @@ import Link from 'next/link';
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { STAGE_LABELS } from '@vop/shared';
 import { apiFetchSwr, ApiError } from '../../lib/api';
 import { Icon } from '../../components/icons';
 import {
@@ -278,7 +279,7 @@ function CasesInner() {
                         ? 'Draft'
                         : c.stage === 'cancelled'
                           ? 'Cancelled'
-                          : c.stage}
+                          : (STAGE_LABELS[c.stage] ?? c.stage)}
                       {c.onHold ? ' · hold' : ''}
                     </span>
                     {c.infosecRequired && (

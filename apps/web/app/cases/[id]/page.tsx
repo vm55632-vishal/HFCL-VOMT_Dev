@@ -84,6 +84,8 @@ interface CaseDetail {
   activity: Activity[];
   stages?: Record<string, StageRow | null>;
   reviewStages?: string[];
+  /** Approval levels (l1/l2/l3) the case runs after its reviews, in order. */
+  approvalLevels?: string[];
 }
 interface FcuPayload {
   residentialAddressCheck: boolean;
@@ -205,7 +207,9 @@ export default function CaseDetail() {
   // to them) goes straight to the editable form pre-filled with what they entered.
   useEffect(() => {
     if (!c || !meId || meId !== c.createdById) return;
-    const hasSentBack = (c.reviewStages ?? []).some((s) => c.stages?.[s]?.status === 'sent_back');
+    const hasSentBack = [...(c.reviewStages ?? []), ...(c.approvalLevels ?? [])].some(
+      (s) => c.stages?.[s]?.status === 'sent_back',
+    );
     if (c.stage === 'draft' || hasSentBack) {
       router.replace(`/cases/new?id=${c.id}`);
     }
@@ -298,13 +302,23 @@ export default function CaseDetail() {
     fcu: 'FCU',
     operation: 'Operation',
     legal: 'Legal',
+    l1: 'L1 approval',
+    l2: 'L2 approval',
+    l3: 'L3 approval',
     sap: 'SAP confirmation',
   };
-  const REVIEW_ROLES = ['infosec', 'fcu', 'operation', 'legal'];
-  // The one parallel stage this viewer owns and which is awaiting them.
-  const myStage = (c.reviewStages ?? []).find(
-    (s) => REVIEW_ROLES.includes(s) && roles.includes(s) && c.stages?.[s]?.status === 'pending',
+  const REVIEW_ROLES = ['infosec', 'fcu', 'operation', 'legal', 'l1', 'l2', 'l3'];
+  const approvalLevels = c.approvalLevels ?? [];
+  // The one stage this viewer owns and which is awaiting them: a parallel review, or the approval
+  // level the case is currently on (levels run one after another).
+  const myStage = [...(c.reviewStages ?? []), ...approvalLevels].find(
+    (s) =>
+      REVIEW_ROLES.includes(s) &&
+      roles.includes(s) &&
+      c.stages?.[s]?.status === 'pending' &&
+      (!approvalLevels.includes(s) || c.stage === s),
   );
+  const isLevelApprover = !!myStage && approvalLevels.includes(myStage);
   const isSapReviewer = roles.includes('sap');
   const detail = c as unknown as VendorDetailsData;
   // Documents shaped for the Vendor Details modal (download URL resolved here).
@@ -454,7 +468,10 @@ export default function CaseDetail() {
           <Link href={`/stages/${myStage}`}>{STAGE_LABELS[myStage]} queue</Link>
         </p>
         {reviewHeader(
-          <span className="pill pill--warn">{STAGE_LABELS[myStage]} review</span>,
+          <span className="pill pill--warn">
+            {STAGE_LABELS[myStage]}
+            {isLevelApprover ? '' : ' review'}
+          </span>,
           <div className="rv-actions">
             <button
               className="btn"
@@ -489,6 +506,15 @@ export default function CaseDetail() {
         <div className="rv-stack">
           {myStage === 'fcu' && <SectionNav sections={FCU_SECTIONS} />}
           {vendorCard}
+
+          {isLevelApprover && (
+            <ParallelReview
+              stages={c.stages ?? {}}
+              reviewStages={c.reviewStages ?? []}
+              caseStage={c.stage}
+              approvalLevels={approvalLevels}
+            />
+          )}
 
           {myStage === 'infosec' && (
             <Card title="Access requested" icon="lock">
@@ -663,7 +689,9 @@ export default function CaseDetail() {
   // SAP confirmation — final stage. Shows every parallel stage's completion, then confirms.
   if (isSapReviewer && (c.stage === 'sap' || c.stage === 'approved' || c.stage === 'rejected')) {
     const active = c.reviewStages ?? [];
-    const allDone = active.every((s) => c.stages?.[s]?.status === 'approved');
+    const allDone = [...active, ...approvalLevels].every(
+      (s) => c.stages?.[s]?.status === 'approved',
+    );
     const fcuData = c.stages?.fcu?.data;
     return (
       <main className="wrap rv-page">
@@ -699,6 +727,7 @@ export default function CaseDetail() {
             stages={c.stages ?? {}}
             reviewStages={active}
             caseStage={c.stage}
+            approvalLevels={approvalLevels}
             canConfirmSap
             onConfirmSap={confirmSap}
           />
@@ -743,7 +772,7 @@ export default function CaseDetail() {
   const reviewStages = c.reviewStages ?? [];
   // Parallel review is driven by the per-stage review screens, so the sequential workflow buttons
   // are only relevant for a legacy/sequential case (not in the review/sap/draft phases).
-  const parallelPhase = ['review', 'sap', 'draft'].includes(c.stage);
+  const parallelPhase = ['review', 'sap', 'draft', ...approvalLevels].includes(c.stage);
   const actions = parallelPhase
     ? []
     : terminal
@@ -755,7 +784,9 @@ export default function CaseDetail() {
         : ['advance', 'return', 'reject', 'hold'];
   const isOwner = meId !== '' && meId === c.createdById;
   // Stages that a reviewer sent back to the proposer (they need to edit & resubmit those).
-  const sentBackStages = reviewStages.filter((s) => c.stages?.[s]?.status === 'sent_back');
+  const sentBackStages = [...reviewStages, ...approvalLevels].filter(
+    (s) => c.stages?.[s]?.status === 'sent_back',
+  );
   const sentBack = sentBackStages.length > 0;
   const lastReturn = [...c.activity]
     .reverse()
@@ -874,6 +905,7 @@ export default function CaseDetail() {
         hidden={tab !== 'overview'}
       >
         {(c.stage === 'review' ||
+          approvalLevels.includes(c.stage) ||
           c.stage === 'sap' ||
           c.stage === 'approved' ||
           c.stage === 'rejected' ||
@@ -883,6 +915,7 @@ export default function CaseDetail() {
               stages={c.stages ?? {}}
               reviewStages={reviewStages}
               caseStage={c.stage}
+              approvalLevels={approvalLevels}
             />
           )}
 

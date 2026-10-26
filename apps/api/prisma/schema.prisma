@@ -243,6 +243,8 @@ model VendorCategory {
   requiredDocuments    String[] @map("required_documents")
   requiredValidations  String[] @map("required_validations")
   workflowKey          String   @map("workflow_key")
+  /// Sequential approval levels this category uses (subset of l1/l2/l3; empty = none).
+  approvalLevels       String[] @default([]) @map("approval_levels")
   createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -415,6 +417,9 @@ model Case {
   infosecClearedAt   DateTime? @map("infosec_cleared_at") @db.Timestamptz(6)
   infosecClearedById String?   @map("infosec_cleared_by_id") @db.Char(26)
 
+  // approval levels (l1/l2/l3) this case runs after its reviews, copied from the category on submit
+  approvalLevels String[] @default([]) @map("approval_levels")
+
   checklist    CaseChecklistItem[]
   comments     CaseComment[]
   activity     CaseActivity[]
@@ -429,6 +434,9 @@ model Case {
   operationStage   CaseOperation?
   sapStage         CaseSap?
   legalStage       CaseLegal?
+  l1Stage          CaseL1?
+  l2Stage          CaseL2?
+  l3Stage          CaseL3?
   responses        CaseVerificationResponse[]
   partners         PartnerDetail[]
   vendorReferences VendorReference[]
@@ -578,9 +586,9 @@ model CaseGeneral {
   caseId String @unique @map("case_id") @db.Char(26)
 
   // vendor identity (non-sensitive)
-  legalName       String  @map("legal_name")
-  tradeName       String? @map("trade_name")
-  businessAddress String? @map("business_address")
+  legalName         String  @map("legal_name")
+  tradeName         String? @map("trade_name")
+  businessAddress   String? @map("business_address")
   // structured address: asked on the form when the PAN has no GST registration
   addressCountry    String? @map("address_country")
   addressState      String? @map("address_state")
@@ -767,6 +775,62 @@ model CaseLegal {
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
   @@map("case_legal")
+}
+
+/// Sequential approval levels (L1 -> L2 -> L3), run after the parallel reviews when the case's
+/// category uses them. Same shape as the other per-stage tables.
+model CaseL1 {
+  id           String    @id @db.Char(26)
+  caseId       String    @unique @map("case_id") @db.Char(26)
+  status       String    @default("pending")
+  decision     String?
+  remark       String?
+  actionedById String?   @map("actioned_by_id") @db.Char(26)
+  enteredAt    DateTime? @map("entered_at") @db.Timestamptz(6)
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz(6)
+  data         Json      @default("{}")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@map("case_l1")
+}
+
+model CaseL2 {
+  id           String    @id @db.Char(26)
+  caseId       String    @unique @map("case_id") @db.Char(26)
+  status       String    @default("pending")
+  decision     String?
+  remark       String?
+  actionedById String?   @map("actioned_by_id") @db.Char(26)
+  enteredAt    DateTime? @map("entered_at") @db.Timestamptz(6)
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz(6)
+  data         Json      @default("{}")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@map("case_l2")
+}
+
+model CaseL3 {
+  id           String    @id @db.Char(26)
+  caseId       String    @unique @map("case_id") @db.Char(26)
+  status       String    @default("pending")
+  decision     String?
+  remark       String?
+  actionedById String?   @map("actioned_by_id") @db.Char(26)
+  enteredAt    DateTime? @map("entered_at") @db.Timestamptz(6)
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz(6)
+  data         Json      @default("{}")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@map("case_l3")
 }
 
 /// Captured third-party verification responses shown on the form (PAN / GST / bank / MSME),

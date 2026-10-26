@@ -107,6 +107,9 @@ export default function Sidebar() {
     { role: 'fcu', label: 'FCU queue' },
     { role: 'operation', label: 'Operation queue' },
     { role: 'legal', label: 'Legal queue' },
+    { role: 'l1', label: 'L1 approvals' },
+    { role: 'l2', label: 'L2 approvals' },
+    { role: 'l3', label: 'L3 approvals' },
     { role: 'sap', label: 'SAP confirmation' },
   ];
   const myQueues = STAGE_QUEUES.filter((q) => me?.roles.includes(q.role));

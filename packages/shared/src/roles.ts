@@ -14,6 +14,9 @@ export enum RoleKey {
   Operation = 'operation',
   Legal = 'legal',
   Sap = 'sap',
+  L1 = 'l1',
+  L2 = 'l2',
+  L3 = 'l3',
   Auditor = 'auditor',
   Vendor = 'vendor',
 }
@@ -150,6 +153,30 @@ export const ROLES: Record<RoleKey, RoleDefinition> = {
     label: 'SAP Confirmation',
     description:
       'Final confirmation stage. Sees every parallel stage’s completion and confirms the vendor into SAP/ERP once all are approved.',
+    builtIn: true,
+    permissions: [...REVIEW, P.VendorViewSensitive, P.DocumentDownload],
+  },
+  [RoleKey.L1]: {
+    key: RoleKey.L1,
+    label: 'L1 Approver',
+    description:
+      'First approval level. Approves, rejects or returns a case after the parallel reviews, for categories that use L1.',
+    builtIn: true,
+    permissions: [...REVIEW, P.VendorViewSensitive, P.DocumentDownload],
+  },
+  [RoleKey.L2]: {
+    key: RoleKey.L2,
+    label: 'L2 Approver',
+    description:
+      'Second approval level. Acts after L1 (or after the reviews when L1 is not used), for categories that use L2.',
+    builtIn: true,
+    permissions: [...REVIEW, P.VendorViewSensitive, P.DocumentDownload],
+  },
+  [RoleKey.L3]: {
+    key: RoleKey.L3,
+    label: 'L3 Approver',
+    description:
+      'Third approval level. The last approval before SAP confirmation, for categories that use L3.',
     builtIn: true,
     permissions: [...REVIEW, P.VendorViewSensitive, P.DocumentDownload],
   },

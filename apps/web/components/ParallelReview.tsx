@@ -57,10 +57,13 @@ export default function ParallelReview({
   caseStage,
   onConfirmSap,
   canConfirmSap = false,
+  approvalLevels = [],
 }: {
   stages: Record<string, StageRow | null>;
   reviewStages: string[];
   caseStage: string;
+  /** Sequential approval levels (l1/l2/l3) the case runs after its reviews. */
+  approvalLevels?: string[];
   onConfirmSap?: () => void;
   canConfirmSap?: boolean;
 }) {
@@ -68,7 +71,8 @@ export default function ParallelReview({
   const done = active.filter((s) => stages[s]?.status === 'approved').length;
   const total = active.length;
   const allDone = total > 0 && done === total;
-  const anyRejected = active.some((s) => stages[s]?.status === 'rejected');
+  const anyRejected = [...active, ...approvalLevels].some((s) => stages[s]?.status === 'rejected');
+  const levelsDone = approvalLevels.filter((l) => stages[l]?.status === 'approved').length;
 
   const sapStatus =
     caseStage === 'approved'
@@ -98,10 +102,16 @@ export default function ParallelReview({
         : sapStatus === 'cancelled'
           ? 'This case was cancelled, so no further reviews or confirmation are needed.'
           : sapStatus === 'ready'
-            ? 'All parallel reviews are completed. Confirm with SAP to proceed further.'
+            ? approvalLevels.length
+              ? 'All reviews and approvals are completed. Confirm with SAP to proceed further.'
+              : 'All parallel reviews are completed. Confirm with SAP to proceed further.'
             : anyRejected
               ? 'A review was rejected — SAP confirmation will not proceed.'
-              : 'SAP confirmation unlocks once every parallel review is approved.';
+              : approvalLevels.length
+                ? `SAP confirmation unlocks once every review and the ${approvalLevels
+                    .map((l) => l.toUpperCase())
+                    .join(' → ')} approval${approvalLevels.length > 1 ? 's are' : ' is'} done.`
+                : 'SAP confirmation unlocks once every parallel review is approved.';
 
   return (
     <section className="prv">
@@ -182,6 +192,43 @@ export default function ParallelReview({
         <div className="prv__arrow" aria-hidden="true">
           <Icon name="arrow" size={22} />
         </div>
+
+        {approvalLevels.length > 0 && (
+          <>
+            <ol className="prv__levels" aria-label="Approval levels, in order">
+              <li className="prv__levelshead">
+                Approvals · {levelsDone} of {approvalLevels.length}
+              </li>
+              {approvalLevels.map((l) => {
+                const row = stages[l];
+                const raw = row?.status ?? 'waiting';
+                // A level is "current" only while the case is on it; earlier ones just wait.
+                const st = raw === 'pending' && caseStage !== l ? 'waiting' : raw;
+                const t = st === 'waiting' ? 'pending' : tone(st);
+                return (
+                  <li key={l} className={`prv__level${caseStage === l ? ' is-current' : ''}`}>
+                    <span className={`prv__badgeicon prv__badgeicon--${t}`}>
+                      <Icon name={iconFor(t)} size={16} />
+                    </span>
+                    <div className="prv__levelmain">
+                      <div className="prv__cardtitle">{l.toUpperCase()} approval</div>
+                      <div className="prv__levelmeta">
+                        {st === 'waiting'
+                          ? 'Waiting'
+                          : st === 'pending'
+                            ? 'Awaiting approver'
+                            : `${statusLabel(st)}${row?.actionedByName ? ` by ${row.actionedByName}` : ''}`}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="prv__arrow" aria-hidden="true">
+              <Icon name="arrow" size={22} />
+            </div>
+          </>
+        )}
 
         <div className={`prv__sap prv__sap--${sapBadge.box}`}>
           <div className="prv__cardhead">

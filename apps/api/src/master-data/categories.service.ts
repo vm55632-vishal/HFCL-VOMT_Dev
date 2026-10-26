@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { newId } from '@vop/shared';
+import { newId, normaliseApprovalLevels } from '@vop/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { TtlCache } from '../common/ttl-cache';
@@ -13,6 +13,7 @@ export interface CategoryInput {
   requiredDocuments?: string[];
   requiredValidations?: string[];
   workflowKey: string;
+  approvalLevels?: string[];
 }
 
 @Injectable()
@@ -75,6 +76,7 @@ export class CategoriesService {
         requiredDocuments: input.requiredDocuments ?? [],
         requiredValidations: input.requiredValidations ?? [],
         workflowKey: input.workflowKey,
+        approvalLevels: normaliseApprovalLevels(input.approvalLevels),
       },
     });
     this.invalidate();
@@ -105,6 +107,9 @@ export class CategoriesService {
         requiredDocuments: changes.requiredDocuments,
         requiredValidations: changes.requiredValidations,
         workflowKey: changes.workflowKey,
+        approvalLevels: changes.approvalLevels
+          ? normaliseApprovalLevels(changes.approvalLevels)
+          : undefined,
         active: changes.active,
       },
     });
@@ -114,7 +119,12 @@ export class CategoriesService {
       entityType: 'VendorCategory',
       entityId: after.id,
       actorId,
-      detail: { key },
+      detail: {
+        key,
+        ...(changes.approvalLevels
+          ? { approvalLevels: { from: before.approvalLevels, to: after.approvalLevels } }
+          : {}),
+      },
     });
     return after;
   }

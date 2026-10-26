@@ -100,6 +100,15 @@ Copy `.env.example` to `.env` before running. Never commit `.env`.
   categories/workflows, Postgres RLS, per-company keys, a self-service access-request form (requests
   still come from JIT/admin).
 
+- **Approval levels L1 → L2 → L3:** optional sequential approvals between the parallel reviews and
+  SAP (`packages/shared/src/stages.ts` — `APPROVAL_LEVELS`, `nextAfterApproval`). Each vendor
+  category picks its levels (`vendor_category.approval_levels`, switched on the categories admin;
+  none by default); a case copies them on submit (`case.approval_levels`) and `case.stage` holds the
+  current level. Tables `case_l1/l2/l3` (`sql/0004`), roles `l1`/`l2`/`l3` (per company), queues
+  `/stages/l1..l3`, same decision endpoint as the reviews. Send-back returns to that level on
+  resubmit; reopen resumes at a rejected level. Demo logins: `node apps/api/scripts/create-approvers.cjs`
+  (`l1@`/`l2@`/`l3@vop.local`). Proof: `corepack pnpm --filter @vop/api check:levels`.
+
 - **Phase 0 (Foundation):** ✅ done — committed on `master` (scaffold, providers, config, Prisma base schema, audit, health, docker-compose, CI, ADRs).
 - **Phase 1 (Identity & Access):** ✅ done, merged to `master` — local + OIDC/SAML auth with JIT provisioning, self-registration + manager approval (SoD + expiry/escalation), deny-by-default RBAC guard with IDOR + negative tests, DB-backed sessions, brute-force protection, user-admin + web console.
 - **Phase 2 (Master data & workflow engine):** ✅ done on `feat/phase-2-workflow`. Data-driven, versioned **workflow engine** (`packages/shared/workflow.ts` — tier routing, SLA business-day math, transition validation, evidence gate); vendor **categories** master data + admin API; **versioned workflow** admin API (draft → publish → archive, immutable published versions, stage-level permissions) with live route-preview; **BullMQ SLA/escalation jobs** (`apps/api/src/jobs`, gated by `VOP_JOBS_ENABLED`, repeatable sweep + manual `/maintenance/sweep`); **web designer UI** (categories admin, workflows list, per-workflow stage editor + route preview). Seed: 10 categories + published `standard-vendor` v1. Repo lives at `C:\dev\vop` (off OneDrive). **83 unit tests pass**; live-demoed. _Deferred (minor): per-entity-type field config — entity types remain the shared enum for now._

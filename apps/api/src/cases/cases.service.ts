@@ -20,9 +20,14 @@ import {
   newId,
   PERMISSIONS,
   activeReviewStages,
+  isApprovalLevel,
+  nextAfterApproval,
+  normaliseApprovalLevels,
   REVIEW_STAGES,
   SAP_STAGE,
+  STAGE_LABELS,
   STAGE_ROLE,
+  type ApprovalLevel,
   type ReviewStage,
   type RiskInput,
   type TierKey,
@@ -48,7 +53,7 @@ import { STORAGE_PROVIDER, type StorageProvider } from '../providers/contracts';
 import { caseOwnerIds, isCaseOwner, ownedBy } from './case-ownership';
 
 /** Workflow stage keys that have their own per-stage reporting table. */
-type StageTable = 'draft' | 'infosec' | 'fcu' | 'operation' | 'sap' | 'legal';
+type StageTable = 'draft' | 'infosec' | 'fcu' | 'operation' | 'sap' | 'legal' | 'l1' | 'l2' | 'l3';
 
 /**
  * Prisma's `contains` does not escape SQL LIKE wildcards, so a typed `%` or `_` would match
@@ -516,6 +521,15 @@ export class CasesService {
       case 'legal':
         await this.prisma.caseLegal.upsert(args);
         break;
+      case 'l1':
+        await this.prisma.caseL1.upsert(args);
+        break;
+      case 'l2':
+        await this.prisma.caseL2.upsert(args);
+        break;
+      case 'l3':
+        await this.prisma.caseL3.upsert(args);
+        break;
       default:
         break; // no dedicated table for this stage
     }
@@ -649,6 +663,9 @@ export class CasesService {
       fcu: 'fcuStage',
       operation: 'operationStage',
       legal: 'legalStage',
+      l1: 'l1Stage',
+      l2: 'l2Stage',
+      l3: 'l3Stage',
       sap: 'sapStage',
     };
     const stages: Record<string, Record<string, unknown> | null> = {};
@@ -679,6 +696,7 @@ export class CasesService {
     namesDone.catch(() => undefined);
     out.stages = stages;
     out.reviewStages = activeReviewStages(Boolean(c.infosecRequired));
+    out.approvalLevels = normaliseApprovalLevels(c.approvalLevels as string[] | undefined);
 
     // Registry results captured when the vendor was entered (PAN / GST / bank / MSME), decrypted
     // for the "full details" view. Data minimisation: the full PAN number, Aadhaar details and the
@@ -920,6 +938,8 @@ export class CasesService {
     // Submitting the case fans it out to the parallel reviewers (FCU/Operation/Legal, + InfoSec
     // when flagged). The case sits in the "review" phase until every active stage is approved.
     const stages = activeReviewStages(infosecRequired);
+    // Approval levels (L1/L2/L3) the category uses; the case keeps them even if the category changes.
+    const approvalLevels = normaliseApprovalLevels(category.approvalLevels);
 
     // Phase B — the case, its vendor detail, checklist and activity in one atomic transaction.
     // The audit entry starts in parallel (lock + previous hash) and is written only once this
@@ -941,6 +961,7 @@ export class CasesService {
           createdById: actor.id,
           lastUpdatedById: actor.id,
           infosecRequired,
+          approvalLevels,
           general: {
             create: { id: newId(), ...generalData } as Prisma.CaseGeneralCreateWithoutCaseInput,
           },
@@ -964,7 +985,11 @@ export class CasesService {
                 actorId: actor.id,
                 action: 'submitted_for_review',
                 toStage: 'review',
-                note: `Parallel review opened: ${stages.join(', ')}.`,
+                note: `Parallel review opened: ${stages.join(', ')}.${
+                  approvalLevels.length
+                    ? ` Then approval by ${approvalLevels.map((l) => l.toUpperCase()).join(' → ')}.`
+                    : ''
+                }`,
               },
             ],
           },
@@ -984,6 +1009,7 @@ export class CasesService {
           category: input.categoryKey,
           duplicateFlags: duplicates.length,
           infosecRequired,
+          approvalLevels,
           teamOverridden: teamRow.overriddenFields,
           ...(onBehalfOfId ? { onBehalfOf: proposer.email } : {}),
         },
@@ -998,6 +1024,7 @@ export class CasesService {
     const openedAt = new Date();
     await Promise.all([
       ...stages.map((s) => this.writeStage(id, s, { status: 'pending', enteredAt: openedAt })),
+      ...approvalLevels.map((l) => this.writeStage(id, l, { status: 'waiting' })),
       this.writeStage(id, SAP_STAGE, { status: 'waiting' }),
       this.captureResponses(id, actor, {
         pan: input.pan,
@@ -1038,7 +1065,7 @@ export class CasesService {
   }
 
   private async readStage(caseId: string, stageKey: string): Promise<{ status: string } | null> {
-    switch (stageKey as ReviewStage | typeof SAP_STAGE) {
+    switch (stageKey as ReviewStage | ApprovalLevel | typeof SAP_STAGE) {
       case 'infosec':
         return this.prisma.caseInfosec.findUnique({ where: { caseId } });
       case 'fcu':
@@ -1049,6 +1076,12 @@ export class CasesService {
         return this.prisma.caseLegal.findUnique({ where: { caseId } });
       case 'sap':
         return this.prisma.caseSap.findUnique({ where: { caseId } });
+      case 'l1':
+        return this.prisma.caseL1.findUnique({ where: { caseId } });
+      case 'l2':
+        return this.prisma.caseL2.findUnique({ where: { caseId } });
+      case 'l3':
+        return this.prisma.caseL3.findUnique({ where: { caseId } });
       default:
         return null;
     }
@@ -1057,17 +1090,22 @@ export class CasesService {
   /**
    * A parallel reviewer (InfoSec/FCU/Operation/Legal) acts on their own stage. Send-back reopens
    * only that stage for the proposer; reject fails the whole case; when every active stage is
-   * approved the case advances to the SAP confirmation gate. `extra.agreement` is stored for Legal.
+   * approved the case moves to its first approval level (L1/L2/L3), or to the SAP confirmation gate
+   * when it uses none. An approval level acts the same way once it is current; approving it moves
+   * the case to its next level, then to SAP. `extra.agreement` is stored for Legal.
    */
   async stageDecision(
     actor: AuthUser,
     id: string,
-    stageKey: ReviewStage,
+    stageKey: ReviewStage | ApprovalLevel,
     decision: 'approve' | 'reject' | 'sendback',
     note?: string,
     extra?: { agreement?: string; fcu?: FcuFindings },
   ) {
-    if (!REVIEW_STAGES.includes(stageKey)) throw new BadRequestException('Unknown review stage.');
+    const isLevel = isApprovalLevel(stageKey);
+    if (!isLevel && !REVIEW_STAGES.includes(stageKey)) {
+      throw new BadRequestException('Unknown review stage.');
+    }
     // The case, this stage's row and (for FCU) the uploaded report are independent reads.
     const [c, current, fcuReports] = await Promise.all([
       this.prisma.case.findUnique({ where: { id } }),
@@ -1083,7 +1121,11 @@ export class CasesService {
     const owns =
       actor.roles.includes(STAGE_ROLE[stageKey]) ||
       actor.permissions.has(PERMISSIONS.WorkflowManage);
-    if (!owns) throw new ForbiddenException(`Only the ${stageKey} reviewer can act on this stage.`);
+    if (!owns) {
+      throw new ForbiddenException(
+        `Only the ${STAGE_LABELS[stageKey] ?? stageKey} reviewer can act on this stage.`,
+      );
+    }
 
     if (CLOSED_STAGES.includes(c.stage)) {
       throw new BadRequestException('This case is closed, so it can no longer be reviewed.');
@@ -1094,10 +1136,12 @@ export class CasesService {
       );
     }
     const active = this.activeStagesFor(c);
-    if (!active.includes(stageKey)) {
+    const levels = normaliseApprovalLevels(c.approvalLevels);
+    if (isLevel ? !levels.includes(stageKey) : !active.includes(stageKey as ReviewStage)) {
       throw new BadRequestException('This stage is not part of this case’s review.');
     }
-    if (!current || current.status !== 'pending') {
+    // Approval levels run one after another: only the level the case is on can act.
+    if (!current || current.status !== 'pending' || (isLevel && c.stage !== stageKey)) {
       throw new BadRequestException('This stage is not awaiting your review.');
     }
     if ((decision === 'reject' || decision === 'sendback') && !note?.trim()) {
@@ -1136,7 +1180,14 @@ export class CasesService {
           actorId: actor.id,
           action: `${stageKey}_${decision}`,
           fromStage: stageKey,
-          toStage: decision === 'sendback' ? 'draft' : 'review',
+          toStage:
+            decision === 'sendback'
+              ? 'draft'
+              : isLevel
+                ? decision === 'approve'
+                  ? nextAfterApproval(levels, stageKey)
+                  : 'rejected'
+                : 'review',
           note: note?.trim() || null,
         },
       }),
@@ -1145,18 +1196,32 @@ export class CasesService {
     // Recompute the overall phase from the active stages. This must read AFTER our own write
     // (above): if two reviewers act at once, the later reader then sees both decisions, so the case
     // can never stall in "review" with every stage approved.
-    const statuses = await this.stageStatuses(id, active);
-    let phase = c.stage;
-    if (Object.values(statuses).some((s) => s === 'rejected')) {
-      phase = 'rejected';
-    } else if (Object.values(statuses).some((s) => s === 'sent_back')) {
-      // One or more stages need the proposer; surface the case to them while others hold.
-      phase = 'review';
-    } else if (active.every((s) => statuses[s] === 'approved')) {
-      phase = SAP_STAGE; // all reviews done -> SAP confirmation gate
+    let phase: string = c.stage;
+    if (isLevel) {
+      // Sequential: approve hands the case to the next level (or SAP); send-back waits for the
+      // proposer, who resubmits straight back to this level.
+      phase =
+        decision === 'approve'
+          ? nextAfterApproval(levels, stageKey)
+          : decision === 'reject'
+            ? 'rejected'
+            : 'review';
     } else {
-      phase = 'review';
+      const statuses = await this.stageStatuses(id, active);
+      if (Object.values(statuses).some((s) => s === 'rejected')) {
+        phase = 'rejected';
+      } else if (Object.values(statuses).some((s) => s === 'sent_back')) {
+        // One or more stages need the proposer; surface the case to them while others hold.
+        phase = 'review';
+      } else if (active.every((s) => statuses[s] === 'approved')) {
+        // All reviews done -> the first approval level, or the SAP confirmation gate.
+        phase = nextAfterApproval(levels);
+      } else {
+        phase = 'review';
+      }
     }
+    // The stage the case moves into (an approval level or SAP) opens for its owner.
+    const opens = phase !== c.stage && (phase === SAP_STAGE || isApprovalLevel(phase));
 
     // Move the case, open the SAP row (if now due) and write the audit entry together; the audit
     // transaction starts alongside and is committed only once the case update succeeds.
@@ -1179,8 +1244,8 @@ export class CasesService {
     audited.catch(() => undefined);
     await Promise.all([
       caseUpdated,
-      phase === SAP_STAGE
-        ? this.writeStage(id, SAP_STAGE, { status: 'pending', enteredAt: new Date() })
+      opens
+        ? this.writeStage(id, phase, { status: 'pending', enteredAt: new Date() })
         : Promise.resolve(),
       audited,
     ]);
@@ -1306,6 +1371,7 @@ export class CasesService {
         onBehalfOfId: true,
         assigneeId: true,
         infosecRequired: true,
+        approvalLevels: true,
         erpRef: true,
       },
     });
@@ -1444,6 +1510,10 @@ export class CasesService {
         }
         const sap = await this.readStage(id, SAP_STAGE);
         const after = await this.stageStatuses(id, active);
+        // Approval levels: a rejected level reopens; the case resumes at the first one not approved.
+        const levels = normaliseApprovalLevels(c.approvalLevels);
+        const levelRows = await Promise.all(levels.map((l) => this.readStage(id, l)));
+        const resumeLevel = levels.find((_, i) => levelRows[i]?.status !== 'approved');
         let phase: string = 'review';
         if (sap?.status === 'rejected') {
           await this.writeStage(id, SAP_STAGE, {
@@ -1453,9 +1523,14 @@ export class CasesService {
           });
           phase = SAP_STAGE;
         } else if (active.every((s) => after[s] === 'approved')) {
-          phase = SAP_STAGE;
-          if (!sap || sap.status === 'waiting') {
-            await this.writeStage(id, SAP_STAGE, { status: 'pending', enteredAt: new Date() });
+          phase = resumeLevel ?? SAP_STAGE;
+          const row = resumeLevel ? levelRows[levels.indexOf(resumeLevel)] : sap;
+          if (!row || row.status !== 'pending') {
+            await this.writeStage(id, phase, {
+              status: 'pending',
+              decision: null,
+              enteredAt: new Date(),
+            });
           }
         }
         await this.prisma.case.update({
@@ -1753,15 +1828,22 @@ export class CasesService {
     // stages that were sent back, plus any newly-active stage with no row yet (e.g. InfoSec toggled on).
     const isDraft = c.stage === 'draft';
     const reopen: ReviewStage[] = [];
+    // An approval level that sent the case back; on resubmit the case returns straight to it.
+    let returnToLevel: ApprovalLevel | undefined;
     if (isDraft) {
       reopen.push(...active);
     } else {
-      const rows = await Promise.all(active.map((s) => this.readStage(id, s)));
+      const caseLevels = normaliseApprovalLevels(c.approvalLevels);
+      const [rows, levelRows] = await Promise.all([
+        Promise.all(active.map((s) => this.readStage(id, s))),
+        Promise.all(caseLevels.map((l) => this.readStage(id, l))),
+      ]);
       active.forEach((s, i) => {
         const row = rows[i];
         if (!row || row.status === 'sent_back') reopen.push(s);
       });
-      if (reopen.length === 0) {
+      returnToLevel = caseLevels.find((_, i) => levelRows[i]?.status === 'sent_back');
+      if (reopen.length === 0 && !returnToLevel) {
         throw new BadRequestException('This case has no stage awaiting your changes.');
       }
     }
@@ -1771,6 +1853,12 @@ export class CasesService {
       this.assertSubCategory(input),
     ]);
     const def = await this.workflows.publishedDefinition(category.workflowKey);
+    // First submission takes the category's approval levels; a resubmitted case keeps its own.
+    const approvalLevels = isDraft
+      ? normaliseApprovalLevels(category.approvalLevels)
+      : normaliseApprovalLevels(c.approvalLevels);
+    // A review stage that was sent back runs first; otherwise the case goes back to the level.
+    const nextStage: string = reopen.length === 0 && returnToLevel ? returnToLevel : 'review';
     const risk = assessRisk(this.riskInputFrom(input, category.enhancedDueDiligence));
     const tier = risk.tier;
 
@@ -1866,10 +1954,11 @@ export class CasesService {
         subCategoryKey: input.subCategoryKey ?? null,
         workflowKey: def.key,
         workflowVersion: def.version,
-        stage: 'review',
+        stage: nextStage,
         tier,
         riskScore: risk.score,
         infosecRequired,
+        approvalLevels,
         lastUpdatedById: actor.id,
         onBehalfOfId: proposer.id === c.createdById ? null : proposer.id,
         ...(isDraft
@@ -1906,10 +1995,13 @@ export class CasesService {
             id: newId(),
             actorId: actor.id,
             action: isDraft ? 'submitted_for_review' : 'resubmitted',
-            toStage: 'review',
+            toStage: nextStage,
             note: isDraft
               ? `Parallel review opened: ${reopen.join(', ')}.`
-              : `Amended and resubmitted; reopened for review: ${reopen.join(', ')}.`,
+              : `Amended and resubmitted; reopened for review: ${[
+                  ...reopen,
+                  ...(returnToLevel ? [returnToLevel] : []),
+                ].join(', ')}.`,
           },
         },
       },
@@ -1919,6 +2011,17 @@ export class CasesService {
     const reopenedAt = new Date();
     await Promise.all([
       ...reopen.map((s) => this.writeStage(id, s, { status: 'pending', enteredAt: reopenedAt })),
+      // A fresh submission seeds its approval levels; a level that sent the case back reopens.
+      ...(isDraft ? approvalLevels.map((l) => this.writeStage(id, l, { status: 'waiting' })) : []),
+      ...(returnToLevel
+        ? [
+            this.writeStage(id, returnToLevel, {
+              status: reopen.length === 0 ? 'pending' : 'waiting',
+              decision: null,
+              enteredAt: reopenedAt,
+            }),
+          ]
+        : []),
       this.writeStage(id, SAP_STAGE, { status: 'waiting' }),
       this.captureResponses(id, actor, {
         pan: isMasked(input.pan) ? null : input.pan,
@@ -1940,7 +2043,12 @@ export class CasesService {
               infosecRequired,
               teamOverridden: teamRow.overriddenFields,
             }
-          : { ref: c.ref, tier, reopened: reopen, infosecRequired },
+          : {
+              ref: c.ref,
+              tier,
+              reopened: [...reopen, ...(returnToLevel ? [returnToLevel] : [])],
+              infosecRequired,
+            },
       }),
     ]);
     return {
@@ -1950,9 +2058,9 @@ export class CasesService {
       riskScore: risk.score,
       drivers: risk.drivers,
       duplicates,
-      stage: 'review',
+      stage: nextStage,
       infosecRequired,
-      reopened: reopen,
+      reopened: [...reopen, ...(returnToLevel ? [returnToLevel] : [])],
     };
   }
 
@@ -1982,8 +2090,9 @@ export class CasesService {
         legal: 'legalStage',
       };
       const relKey = rel[filters.queue];
-      if (filters.queue === 'sap') {
-        where.stage = SAP_STAGE;
+      if (filters.queue === 'sap' || isApprovalLevel(filters.queue)) {
+        // SAP and the approval levels are sequential: the case's stage says whose turn it is.
+        where.stage = filters.queue;
       } else if (relKey) {
         where[relKey] = { status: 'pending' };
         where.stage = 'review';
@@ -2069,6 +2178,9 @@ export class CasesService {
         fcuStage: true,
         operationStage: true,
         legalStage: true,
+        l1Stage: true,
+        l2Stage: true,
+        l3Stage: true,
         sapStage: true,
         responses: {
           select: {
