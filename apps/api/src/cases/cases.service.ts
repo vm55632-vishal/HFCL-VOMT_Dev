@@ -46,9 +46,8 @@ import type { AuthUser } from '../auth/auth-user';
 import { TeamStructureService, TEAM_FIELDS, type TeamOverrides } from './team-structure.service';
 import { STORAGE_PROVIDER, type StorageProvider } from '../providers/contracts';
 
-/** Workflow stage key -> the Prisma delegate for its per-stage reporting table. */
-const STAGE_TABLES = ['draft', 'infosec', 'fcu', 'operation', 'sap', 'legal'] as const;
-type StageTable = (typeof STAGE_TABLES)[number];
+/** Workflow stage keys that have their own per-stage reporting table. */
+type StageTable = 'draft' | 'infosec' | 'fcu' | 'operation' | 'sap' | 'legal';
 
 /**
  * Prisma's `contains` does not escape SQL LIKE wildcards, so a typed `%` or `_` would match
@@ -312,6 +311,16 @@ export class CasesService {
 
   private canSeeAll(actor: AuthUser): boolean {
     return actor.permissions.has(PERMISSIONS.VendorReadAll);
+  }
+
+  /** ADR-0008: the company a new case belongs to, which is always the request's company. */
+  private requireEntity(actor: AuthUser): string {
+    if (!actor.entityId) {
+      throw new ForbiddenException(
+        'You do not have access to any company, so you cannot raise a case.',
+      );
+    }
+    return actor.entityId;
   }
 
   private assertCanSee(
@@ -833,6 +842,7 @@ export class CasesService {
   // ---------- lifecycle ----------
 
   async create(actor: AuthUser, input: CaseCreateInput) {
+    const entityId = this.requireEntity(actor);
     const panIdx = input.pan ? this.blind.index(input.pan) : null;
     const gstIdx = input.gstin ? this.blind.index(input.gstin) : null;
     const bankIdx = input.bankAccount ? this.blind.index(input.bankAccount) : null;
@@ -884,6 +894,7 @@ export class CasesService {
         data: {
           id,
           ref,
+          entityId,
           categoryKey: input.categoryKey,
           subCategoryKey: input.subCategoryKey ?? null,
           workflowKey: published.key,
@@ -1531,6 +1542,7 @@ export class CasesService {
 
   /** Create a draft case (stage "draft"). Visible only to its proposer until it is submitted. */
   async createDraft(actor: AuthUser, input: DraftInput) {
+    const entityId = this.requireEntity(actor);
     await this.assertSubCategory(input);
     const [category, ref, general, partnerRows, teamRow] = await Promise.all([
       this.categories.get(input.categoryKey),
@@ -1545,6 +1557,7 @@ export class CasesService {
       data: {
         id,
         ref,
+        entityId,
         categoryKey: input.categoryKey,
         subCategoryKey: input.subCategoryKey || null,
         workflowKey: published.key,

@@ -1,5 +1,7 @@
 import { Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { currentContext } from '../common/context';
+import { scopeParams } from './entity-scope';
 
 /**
  * Thin wrapper over the generated Prisma client. All persistence goes through this.
@@ -8,6 +10,16 @@ import { PrismaClient } from '@prisma/client';
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private keepAlive?: NodeJS.Timeout;
+
+  constructor() {
+    super();
+    // ADR-0008: every query made while handling an authenticated request is limited to that
+    // request's company (see entity-scope.ts). Outside a request (jobs, seeds) nothing is scoped.
+    this.$use((params, next) => {
+      const scope = currentContext()?.entityScope;
+      return next(scope === undefined ? params : (scopeParams(params, scope) as typeof params));
+    });
+  }
 
   async onModuleInit(): Promise<void> {
     await this.$connect();

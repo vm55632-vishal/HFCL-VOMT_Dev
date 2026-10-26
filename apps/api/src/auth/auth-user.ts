@@ -1,5 +1,5 @@
 import { createParamDecorator, type ExecutionContext } from '@nestjs/common';
-import type { Permission } from '@vop/shared';
+import type { EntitySummary, Permission } from '@vop/shared';
 
 /** The authenticated principal attached to a request by the SessionGuard. */
 export interface AuthUser {
@@ -7,10 +7,19 @@ export interface AuthUser {
   email: string;
   name: string;
   status: string;
+  /** Effective roles: group-wide roles plus the roles held in the active company. */
   roles: string[];
+  /** Permissions granted by {@link roles}. */
   permissions: Set<Permission>;
   managerId: string | null;
   sessionId: string;
+  /** ADR-0008: the company this request works in, or null when the user has none. */
+  entityId: string | null;
+  entityCode: string | null;
+  /** Every company the user may switch to. */
+  entities: EntitySummary[];
+  /** Holds a group-wide role (Super Admin, Platform Admin, Auditor). */
+  groupWide: boolean;
 }
 
 /** A request that has passed authentication. */

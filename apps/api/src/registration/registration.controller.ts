@@ -9,6 +9,7 @@ import { RegistrationService } from './registration.service';
 const selfRegisterSchema = z
   .object({
     requestedRoles: z.array(z.string()).min(1, 'Request at least one role.'),
+    entityCode: z.string().trim().min(2).max(12).optional(),
     justification: z.string().min(10, 'Provide a business justification (min 10 chars).'),
     department: z.string().optional(),
     designation: z.string().optional(),

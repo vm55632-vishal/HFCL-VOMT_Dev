@@ -72,6 +72,10 @@ export class AuthController {
       status: user.status,
       roles: user.roles,
       permissions: [...user.permissions],
+      // ADR-0008: the company this request works in, and every company the user may switch to.
+      activeEntity: user.entities.find((e) => e.id === user.entityId) ?? null,
+      entities: user.entities,
+      groupWide: user.groupWide,
     };
   }
 

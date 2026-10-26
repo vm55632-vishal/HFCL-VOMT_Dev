@@ -60,7 +60,7 @@ export class AuditService {
       entityType: input.entityType ?? null,
       entityId: input.entityId ?? null,
       outcome: input.outcome ?? 'SUCCESS',
-      detail: input.detail === undefined ? null : redact(input.detail),
+      detail: withEntity(input.detail === undefined ? null : redact(input.detail), ctx?.entityCode),
       correlationId: ctx?.correlationId ?? null,
     };
 
@@ -215,4 +215,15 @@ export function auditRowsToCsv(rows: AuditRow[]): string {
   const header = cols.join(',');
   const lines = rows.map((r) => cols.map((c) => esc(r[c])).join(','));
   return [header, ...lines].join('\r\n');
+}
+
+/**
+ * ADR-0008: record which company an entry belongs to, when the request has one and the caller did
+ * not say. Kept inside the hashed detail, so the hash chain format is unchanged.
+ */
+function withEntity(detail: unknown, entityCode: string | undefined): unknown {
+  if (!entityCode) return detail;
+  if (detail === null || detail === undefined) return { entity: entityCode };
+  if (typeof detail !== 'object' || Array.isArray(detail)) return detail;
+  return 'entity' in (detail as object) ? detail : { ...(detail as object), entity: entityCode };
 }

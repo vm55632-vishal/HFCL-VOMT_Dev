@@ -20,7 +20,14 @@ import { UsersService } from './users.service';
 const updateSchema = z
   .object({
     name: z.string().min(1).optional(),
-    roleKeys: z.array(z.string()).optional(),
+    groupRoleKeys: z.array(z.string()).max(10).optional(),
+    entityRoles: z
+      .object({
+        entityCode: z.string().trim().min(2).max(12),
+        roleKeys: z.array(z.string()).max(20),
+      })
+      .strict()
+      .optional(),
     status: z.nativeEnum(UserStatus).optional(),
   })
   .strict()

@@ -22,6 +22,7 @@ import { VerificationModule } from './verification/verification.module';
 import { ReportingModule } from './reporting/reporting.module';
 import { LifecycleModule } from './lifecycle/lifecycle.module';
 import { KycModule } from './kyc/kyc.module';
+import { EntitiesModule } from './entities/entities.module';
 import { SessionGuard } from './auth/session.guard';
 import { PermissionsGuard } from './authz/permissions.guard';
 
@@ -37,6 +38,7 @@ import { PermissionsGuard } from './authz/permissions.guard';
     ProvidersModule,
     CryptoModule,
     AuditModule,
+    EntitiesModule,
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     HealthModule,
     AuthModule,

@@ -15,6 +15,7 @@ import {
   DEFAULT_SUBCATEGORIES,
   DEFAULT_WORKFLOW,
 } from '@vop/shared';
+import { GROUP_ROLES, isGroupRole } from '@vop/shared';
 import { PasswordService } from '../src/auth/password.service';
 
 const prisma = new PrismaClient();
@@ -61,7 +62,31 @@ async function seedRoles(): Promise<void> {
   console.warn(`  roles: ${Object.keys(ROLES).length} upserted`);
 }
 
+/** ADR-0008: the companies in the group. Email domains are configured by an administrator. */
+async function seedEntities(): Promise<void> {
+  const entities = [
+    { code: 'HFCL', name: 'Hero FinCorp Limited', emailDomains: ['vop.local'], sortOrder: 1 },
+    {
+      code: 'HHFL',
+      name: 'Hero Housing Finance Limited',
+      emailDomains: [] as string[],
+      sortOrder: 2,
+    },
+  ];
+  for (const e of entities) {
+    await prisma.entity.upsert({
+      where: { code: e.code },
+      create: { id: newId(), ...e },
+      update: {},
+    });
+  }
+  console.warn(`  entities: ${entities.map((e) => e.code).join(', ')}`);
+}
+
 async function seedUsers(): Promise<void> {
+  // Demo users work in Hero FinCorp. Group-wide roles apply in every company.
+  console.warn(`  group-wide roles: ${GROUP_ROLES.join(', ')}`);
+  const hfcl = await prisma.entity.findUniqueOrThrow({ where: { code: 'HFCL' } });
   // First pass: create/update users without manager links.
   for (const u of DEMO_USERS) {
     await prisma.user.upsert({
@@ -72,14 +97,23 @@ async function seedUsers(): Promise<void> {
         name: u.name,
         status: 'ACTIVE',
         authMethod: 'OIDC',
-        roles: { connect: [{ key: u.role }] },
+        // ADR-0008: only group-wide roles live on the user; the rest are held per company.
+        roles: { connect: isGroupRole(u.role) ? [{ key: u.role }] : [] },
       },
       update: {
         name: u.name,
         status: 'ACTIVE',
-        roles: { set: [{ key: u.role }] },
+        roles: { set: isGroupRole(u.role) ? [{ key: u.role }] : [] },
       },
     });
+    if (!isGroupRole(u.role)) {
+      const user = await prisma.user.findUniqueOrThrow({ where: { email: u.email } });
+      await prisma.userEntityRole.upsert({
+        where: { userId_entityId_roleKey: { userId: user.id, entityId: hfcl.id, roleKey: u.role } },
+        create: { id: newId(), userId: user.id, entityId: hfcl.id, roleKey: u.role },
+        update: {},
+      });
+    }
   }
   // Second pass: manager relationships.
   for (const u of DEMO_USERS) {
@@ -257,6 +291,7 @@ async function seedMasterData(): Promise<void> {
 async function main(): Promise<void> {
   console.warn('Seeding VOP identity foundation…');
   await seedRoles();
+  await seedEntities();
   await seedUsers();
   await seedIdp();
   await seedBreakGlass();

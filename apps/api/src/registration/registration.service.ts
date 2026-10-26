@@ -1,5 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
-import { newId } from '@vop/shared';
+import { isGroupRole, newId } from '@vop/shared';
+import { EntitiesService } from '../entities/entities.service';
+import { homeEntityFor } from '../auth/entity-access';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { evaluateRegistrationApproval } from '../authz/sod';
@@ -10,6 +12,8 @@ const daysFromNow = (d: number, from = Date.now()): Date => new Date(from + d * 
 
 export interface SelfRegistrationInput {
   requestedRoles: string[];
+  /** ADR-0008: the company the access is for. Defaults to the one matching the email domain. */
+  entityCode?: string;
   justification: string;
   department?: string;
   designation?: string;
@@ -28,7 +32,18 @@ export class RegistrationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly entities: EntitiesService,
   ) {}
+
+  /** The company an access request is for: the one asked for, else the email domain's. */
+  private async targetEntity(email: string, entityCode?: string): Promise<string | null> {
+    if (entityCode) {
+      const e = await this.entities.byCode(entityCode);
+      if (!e.active) throw new BadRequestException(`${e.name} is not accepting access requests.`);
+      return e.id;
+    }
+    return homeEntityFor(email, await this.entities.active())?.id ?? null;
+  }
 
   /** The requester's reporting chain, upward — for SoD conflict checks. */
   private async reportingChainUp(userId: string): Promise<string[]> {
@@ -71,12 +86,23 @@ export class RegistrationService {
     const open = await this.existingOpenRequest(userId);
     if (open) throw new BadRequestException('You already have a pending access request.');
 
+    if (input.requestedRoles.some(isGroupRole)) {
+      throw new BadRequestException(
+        'Group-wide roles are granted by an administrator, not through an access request.',
+      );
+    }
+    const entityId = await this.targetEntity(user.email, input.entityCode);
+    if (!entityId) {
+      throw new BadRequestException('Choose the company you need access to.');
+    }
+
     const req = await this.prisma.registrationRequest.create({
       data: {
         id: newId(),
         userId,
         requestedRoles: input.requestedRoles,
         justification: input.justification,
+        entityId,
         status: 'PENDING',
         managerId: user.managerId,
         expiresAt: daysFromNow(EXPIRY_DAYS),
@@ -87,7 +113,7 @@ export class RegistrationService {
       entityType: 'RegistrationRequest',
       entityId: req.id,
       actorId: userId,
-      detail: { requestedRoles: input.requestedRoles },
+      detail: { requestedRoles: input.requestedRoles, entityId },
     });
     return { id: req.id };
   }
@@ -104,8 +130,9 @@ export class RegistrationService {
       data: {
         id: newId(),
         userId,
-        requestedRoles: roleKeys,
+        requestedRoles: roleKeys.filter((k) => !isGroupRole(k)),
         justification: 'Auto-created on first SSO login (JIT).',
+        entityId: await this.targetEntity(user.email),
         status: 'PENDING',
         managerId: user.managerId,
         expiresAt: daysFromNow(EXPIRY_DAYS),
@@ -124,7 +151,10 @@ export class RegistrationService {
   async pendingForManager(managerId: string) {
     return this.prisma.registrationRequest.findMany({
       where: { managerId, status: { in: ['PENDING', 'INFO_REQUESTED', 'ESCALATED'] } },
-      include: { user: { select: { id: true, name: true, email: true, department: true } } },
+      include: {
+        user: { select: { id: true, name: true, email: true, department: true } },
+        entity: { select: { code: true, name: true } },
+      },
       orderBy: { createdAt: 'asc' },
     });
   }
@@ -154,14 +184,27 @@ export class RegistrationService {
     if (!sod.allowed) throw new ForbiddenException(sod.reason);
 
     if (decision === 'approve') {
-      const roleKeys = rolesOverride ?? req.requestedRoles;
-      await this.prisma.user.update({
+      // ADR-0008: the roles are granted in the request's company only. Group-wide roles are never
+      // granted through a request; an administrator assigns them.
+      const roleKeys = (rolesOverride ?? req.requestedRoles).filter((k) => !isGroupRole(k));
+      const requester = await this.prisma.user.findUniqueOrThrow({
         where: { id: req.userId },
-        data: {
-          status: 'ACTIVE',
-          roles: { set: roleKeys.map((key) => ({ key })) },
-        },
+        select: { email: true },
       });
+      const entityId = req.entityId ?? (await this.targetEntity(requester.email));
+      if (!entityId) {
+        throw new BadRequestException(
+          'This request does not say which company it is for. Ask the requester to submit it again.',
+        );
+      }
+      await this.prisma.$transaction([
+        this.prisma.userEntityRole.deleteMany({ where: { userId: req.userId, entityId } }),
+        this.prisma.userEntityRole.createMany({
+          data: roleKeys.map((roleKey) => ({ id: newId(), userId: req.userId, entityId, roleKey })),
+          skipDuplicates: true,
+        }),
+        this.prisma.user.update({ where: { id: req.userId }, data: { status: 'ACTIVE' } }),
+      ]);
       principalCache.invalidateUser(req.userId);
       await this.prisma.registrationRequest.update({
         where: { id: requestId },
@@ -177,7 +220,7 @@ export class RegistrationService {
         entityType: 'RegistrationRequest',
         entityId: requestId,
         actorId: approver.id,
-        detail: { grantedRoles: roleKeys, requester: req.userId },
+        detail: { grantedRoles: roleKeys, requester: req.userId, entityId },
       });
       return;
     }

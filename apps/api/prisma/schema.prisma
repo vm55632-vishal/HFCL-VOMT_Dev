@@ -78,7 +78,8 @@ model Role {
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @db.Timestamptz(6)
 
-  users User[] @relation("UserRoles")
+  users       User[]           @relation("UserRoles")
+  entityRoles UserEntityRole[]
 
   @@map("roles")
 }
@@ -104,9 +105,10 @@ model User {
   createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  manager     User?  @relation("Manager", fields: [managerId], references: [id])
-  reports     User[] @relation("Manager")
-  roles       Role[] @relation("UserRoles")
+  manager     User?            @relation("Manager", fields: [managerId], references: [id])
+  reports     User[]           @relation("Manager")
+  roles       Role[]           @relation("UserRoles")
+  entityRoles UserEntityRole[]
 
   sessions             Session[]
   registrationRequests RegistrationRequest[] @relation("Requester")
@@ -180,8 +182,10 @@ model RegistrationRequest {
   expiresAt      DateTime           @map("expires_at") @db.Timestamptz(6)
   createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  user      User  @relation("Requester", fields: [userId], references: [id], onDelete: Cascade)
-  decidedBy User? @relation("Decider", fields: [decidedById], references: [id])
+  user      User    @relation("Requester", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy User?   @relation("Decider", fields: [decidedById], references: [id])
+  entityId  String? @map("entity_id") @db.Char(26)
+  entity    Entity? @relation(fields: [entityId], references: [id])
 
   @@index([status])
   @@map("registration_request")
@@ -348,7 +352,7 @@ model WorkflowStage {
   applicableTiers String[] @map("applicable_tiers")
   evidenceGate    Boolean  @default(false) @map("evidence_gate")
 
-  workflow    WorkflowDefinition       @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  workflow    WorkflowDefinition        @relation(fields: [workflowId], references: [id], onDelete: Cascade)
   permissions WorkflowStagePermission[]
 
   @@unique([workflowId, key])
@@ -359,15 +363,15 @@ model WorkflowStage {
 /// Stage-level permissions — which role may view, edit fields, approve, reject, send back or
 /// reassign at a stage. Data-driven (prompt §3.1); enforced server-side.
 model WorkflowStagePermission {
-  id           String  @id @db.Char(26)
-  stageId      String  @map("stage_id") @db.Char(26)
-  roleKey      String  @map("role_key")
-  canView      Boolean @default(true) @map("can_view")
+  id            String  @id @db.Char(26)
+  stageId       String  @map("stage_id") @db.Char(26)
+  roleKey       String  @map("role_key")
+  canView       Boolean @default(true) @map("can_view")
   canEditFields Boolean @default(false) @map("can_edit_fields")
-  canApprove   Boolean @default(false) @map("can_approve")
-  canReject    Boolean @default(false) @map("can_reject")
-  canSendBack  Boolean @default(false) @map("can_send_back")
-  canReassign  Boolean @default(false) @map("can_reassign")
+  canApprove    Boolean @default(false) @map("can_approve")
+  canReject     Boolean @default(false) @map("can_reject")
+  canSendBack   Boolean @default(false) @map("can_send_back")
+  canReassign   Boolean @default(false) @map("can_reassign")
 
   stage WorkflowStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
 
@@ -379,18 +383,18 @@ model WorkflowStagePermission {
 /// (PAN, bank account) are stored encrypted (envelope) with a blind index for duplicate detection;
 /// the tier and checklist are computed server-side. In-flight cases keep their workflow version.
 model Case {
-  id              String    @id @db.Char(26)
-  ref             String    @unique
-  categoryKey     String    @map("category_key")
-  subCategoryKey  String?   @map("sub_category_key")
-  workflowKey     String    @map("workflow_key")
-  workflowVersion Int       @map("workflow_version")
+  id              String  @id @db.Char(26)
+  ref             String  @unique
+  categoryKey     String  @map("category_key")
+  subCategoryKey  String? @map("sub_category_key")
+  workflowKey     String  @map("workflow_key")
+  workflowVersion Int     @map("workflow_version")
 
   // workflow state
-  stage      String
-  assigneeId String?   @map("assignee_id") @db.Char(26)
-  dueAt      DateTime? @map("due_at") @db.Timestamptz(6)
-  onHold     Boolean   @default(false) @map("on_hold")
+  stage        String
+  assigneeId   String?   @map("assignee_id") @db.Char(26)
+  dueAt        DateTime? @map("due_at") @db.Timestamptz(6)
+  onHold       Boolean   @default(false) @map("on_hold")
   tier         String    @default("low")
   riskScore    Int       @default(0) @map("risk_score")
   vendorCode   String?   @map("vendor_code")
@@ -418,25 +422,29 @@ model Case {
   verification CaseVerification?
 
   // normalized reporting structure (all keyed by case id)
-  general        CaseGeneral?
-  draftStage     CaseDraft?
-  infosecStage   CaseInfosec?
-  fcuStage       CaseFcu?
-  operationStage CaseOperation?
-  sapStage       CaseSap?
-  legalStage     CaseLegal?
-  responses      CaseVerificationResponse[]
-
-  @@index([stage])
-  @@index([createdById])
-  @@index([assigneeId])
-  @@index([infosecRequired])
+  general          CaseGeneral?
+  draftStage       CaseDraft?
+  infosecStage     CaseInfosec?
+  fcuStage         CaseFcu?
+  operationStage   CaseOperation?
+  sapStage         CaseSap?
+  legalStage       CaseLegal?
+  responses        CaseVerificationResponse[]
   partners         PartnerDetail[]
   vendorReferences VendorReference[]
   rcLimits         RcLimit[]
   teamStructure    CaseTeamStructure?
   kycChecks        CaseKycCheck[]
 
+  // ADR-0008: the group company this case belongs to
+  entityId String @map("entity_id") @db.Char(26)
+  entity   Entity @relation(fields: [entityId], references: [id])
+
+  @@index([stage])
+  @@index([createdById])
+  @@index([assigneeId])
+  @@index([infosecRequired])
+  @@index([entityId, createdAt])
   @@map("case")
 }
 
@@ -824,19 +832,19 @@ model VendorReference {
 /// Revolving-credit (RC) limits the vendor holds with its financers. Optional; one row per financer.
 /// The amount is nullable so a half-filled draft row can be saved.
 model RcLimit {
-  id          String   @id @db.Char(26)
-  caseId      String   @map("case_id") @db.Char(26)
-  position    Int      @default(0)
-  financerName String  @map("financer_name")
-  rcLimit     Decimal? @map("rc_limit") @db.Decimal(18, 2)
+  id                 String   @id @db.Char(26)
+  caseId             String   @map("case_id") @db.Char(26)
+  position           Int      @default(0)
+  financerName       String   @map("financer_name")
+  rcLimit            Decimal? @map("rc_limit") @db.Decimal(18, 2)
   // Derived on the server from numberOfVehicles x the per-vehicle limit (never taken from the client)
-  numberOfVehicles   Int?      @map("number_of_vehicles")
-  sanctionLoanLimit  Decimal?  @map("sanction_loan_limit") @db.Decimal(18, 2)
-  creditLimitFigures Decimal?  @map("credit_limit_figures") @db.Decimal(18, 2)
-  creditLimitWords   String?   @map("credit_limit_words")
-  remarks     String?
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  numberOfVehicles   Int?     @map("number_of_vehicles")
+  sanctionLoanLimit  Decimal? @map("sanction_loan_limit") @db.Decimal(18, 2)
+  creditLimitFigures Decimal? @map("credit_limit_figures") @db.Decimal(18, 2)
+  creditLimitWords   String?  @map("credit_limit_words")
+  remarks            String?
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
@@ -848,53 +856,57 @@ model RcLimit {
 /// by an administrator; the raise-case form reads it for the signed-in proposer. The proposer's name
 /// and email always come from the login, the rest from this table.
 model TeamStructureMaster {
-  id            String   @id @db.Char(26)
-  proposerEmail String   @unique @map("proposer_email")
-  proposerName  String   @map("proposer_name")
-  proposerDepartment   String? @map("proposer_department")
-  hodName              String? @map("hod_name")
-  hodEmail             String? @map("hod_email")
-  zonalManagerName     String? @map("zonal_manager_name")
-  zonalManagerEmail    String? @map("zonal_manager_email")
-  eyDdName             String? @map("ey_dd_name")
-  eyDdEmail            String? @map("ey_dd_email")
-  signatoryAName       String? @map("signatory_a_name")
-  signatoryAEmail      String? @map("signatory_a_email")
-  signatoryBName       String? @map("signatory_b_name")
-  signatoryBEmail      String? @map("signatory_b_email")
-  sapTeamName          String? @map("sap_team_name")
-  sapTeamEmail         String? @map("sap_team_email")
-  sfdcTeamEmail        String? @map("sfdc_team_email")
-  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                 String   @id @db.Char(26)
+  proposerEmail      String   @map("proposer_email")
+  proposerName       String   @map("proposer_name")
+  proposerDepartment String?  @map("proposer_department")
+  hodName            String?  @map("hod_name")
+  hodEmail           String?  @map("hod_email")
+  zonalManagerName   String?  @map("zonal_manager_name")
+  zonalManagerEmail  String?  @map("zonal_manager_email")
+  eyDdName           String?  @map("ey_dd_name")
+  eyDdEmail          String?  @map("ey_dd_email")
+  signatoryAName     String?  @map("signatory_a_name")
+  signatoryAEmail    String?  @map("signatory_a_email")
+  signatoryBName     String?  @map("signatory_b_name")
+  signatoryBEmail    String?  @map("signatory_b_email")
+  sapTeamName        String?  @map("sap_team_name")
+  sapTeamEmail       String?  @map("sap_team_email")
+  sfdcTeamEmail      String?  @map("sfdc_team_email")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  entityId String @map("entity_id") @db.Char(26)
+  entity   Entity @relation(fields: [entityId], references: [id])
+
+  @@unique([entityId, proposerEmail])
   @@map("team_structure_master")
 }
 
 /// The team structure as it was when the case was raised (a snapshot, so later master changes do not
 /// rewrite history). Copied from team_structure_master on the server at submission.
 model CaseTeamStructure {
-  id        String   @id @db.Char(26)
-  caseId    String   @unique @map("case_id") @db.Char(26)
-  proposerName         String? @map("proposer_name")
-  proposerEmail        String? @map("proposer_email")
-  proposerDepartment   String? @map("proposer_department")
-  hodName              String? @map("hod_name")
-  hodEmail             String? @map("hod_email")
-  zonalManagerName     String? @map("zonal_manager_name")
-  zonalManagerEmail    String? @map("zonal_manager_email")
-  eyDdName             String? @map("ey_dd_name")
-  eyDdEmail            String? @map("ey_dd_email")
-  signatoryAName       String? @map("signatory_a_name")
-  signatoryAEmail      String? @map("signatory_a_email")
-  signatoryBName       String? @map("signatory_b_name")
-  signatoryBEmail      String? @map("signatory_b_email")
-  sapTeamName          String? @map("sap_team_name")
-  sapTeamEmail         String? @map("sap_team_email")
-  sfdcTeamEmail        String? @map("sfdc_team_email")
+  id                 String   @id @db.Char(26)
+  caseId             String   @unique @map("case_id") @db.Char(26)
+  proposerName       String?  @map("proposer_name")
+  proposerEmail      String?  @map("proposer_email")
+  proposerDepartment String?  @map("proposer_department")
+  hodName            String?  @map("hod_name")
+  hodEmail           String?  @map("hod_email")
+  zonalManagerName   String?  @map("zonal_manager_name")
+  zonalManagerEmail  String?  @map("zonal_manager_email")
+  eyDdName           String?  @map("ey_dd_name")
+  eyDdEmail          String?  @map("ey_dd_email")
+  signatoryAName     String?  @map("signatory_a_name")
+  signatoryAEmail    String?  @map("signatory_a_email")
+  signatoryBName     String?  @map("signatory_b_name")
+  signatoryBEmail    String?  @map("signatory_b_email")
+  sapTeamName        String?  @map("sap_team_name")
+  sapTeamEmail       String?  @map("sap_team_email")
+  sfdcTeamEmail      String?  @map("sfdc_team_email")
   // Fields the proposer changed from the master for this case (audit trail of the override)
-  overriddenFields     Json?    @map("overridden_fields")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  overriddenFields   Json?    @map("overridden_fields")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
@@ -911,7 +923,11 @@ model TeamDirectory {
   email     String
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  @@unique([roleKey, email])
+  entityId String @map("entity_id") @db.Char(26)
+  entity   Entity @relation(fields: [entityId], references: [id])
+
+  @@unique([entityId, roleKey, email])
+  @@index([entityId])
   @@index([roleKey])
   @@map("team_directory")
 }
@@ -935,4 +951,42 @@ model CaseKycCheck {
   @@unique([caseId, checkKey])
   @@index([caseId])
   @@map("case_kyc_check")
+}
+
+/// ADR-0008: a company in the group (e.g. Hero FinCorp, Hero Housing Finance). Cases, per-entity
+/// roles and team structure belong to one entity. Email domains pick a new user's home entity.
+model Entity {
+  id           String   @id @db.Char(26)
+  code         String   @unique
+  name         String
+  emailDomains String[] @default([]) @map("email_domains")
+  active       Boolean  @default(true)
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  cases                Case[]
+  userRoles            UserEntityRole[]
+  registrationRequests RegistrationRequest[]
+  teamMasters          TeamStructureMaster[]
+  teamDirectory        TeamDirectory[]
+
+  @@map("entity")
+}
+
+/// ADR-0008: a role a person holds in one entity. Group-wide roles stay on users.roles.
+model UserEntityRole {
+  id        String   @id @db.Char(26)
+  userId    String   @map("user_id") @db.Char(26)
+  entityId  String   @map("entity_id") @db.Char(26)
+  roleKey   String   @map("role_key")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleKey], references: [key], onDelete: Cascade)
+
+  @@unique([userId, entityId, roleKey])
+  @@index([entityId])
+  @@map("user_entity_role")
 }

@@ -65,7 +65,9 @@ export class DocumentsService {
   /** Display-only filename: strip any path and control chars, cap length. Never used as a key. */
   private safeName(name: string): string {
     const base = name.split(/[\\/]/).pop() ?? 'file';
-    return base.replace(/[\u0000-\u001f]/g, '').slice(0, 200) || 'file';
+    // Drop control characters (code points below 0x20) without a control-character regex.
+    const printable = [...base].filter((ch) => ch.charCodeAt(0) >= 0x20).join('');
+    return printable.slice(0, 200) || 'file';
   }
 
   async upload(

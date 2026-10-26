@@ -13,6 +13,10 @@ function user(perms: Permission[]): AuthUser {
     roles: [],
     permissions: new Set(perms),
     managerId: null,
+    entityId: null,
+    entityCode: null,
+    entities: [],
+    groupWide: false,
     sessionId: 's1',
   };
 }
