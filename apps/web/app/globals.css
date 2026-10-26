@@ -3814,3 +3814,88 @@ code {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- Registry lookup progress (PAN check) ---- */
+.lookup {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.lookup__track {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  background: var(--accent-quiet);
+  border-radius: 999px;
+}
+.lookup__bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  border-radius: 999px;
+  animation: lookup-slide 1.3s ease-in-out infinite;
+}
+.lookup__text {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--accent);
+}
+.lookup__dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--accent);
+  border-radius: 50%;
+  animation: lookup-pulse 1s ease-in-out infinite;
+}
+.lookup__step {
+  animation: lookup-fade 0.35s ease-out;
+}
+.lookup__secs {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+@keyframes lookup-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+@keyframes lookup-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes lookup-fade {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lookup__bar {
+    width: 100%;
+    animation: none;
+    opacity: 0.5;
+  }
+  .lookup__dot,
+  .lookup__step {
+    animation: none;
+  }
+}

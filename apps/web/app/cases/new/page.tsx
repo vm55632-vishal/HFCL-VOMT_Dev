@@ -12,6 +12,7 @@ import {
   RC_LIMIT_PER_VEHICLE,
 } from '@vop/shared';
 import { lookupIfsc } from '../../../lib/ifsc';
+import { LookupProgress } from '../../../components/LookupProgress';
 import { TeamStructureEditor, type TeamInfo } from '../../../components/TeamStructureEditor';
 import { explainValidation } from '../../../lib/validation-errors';
 import { Icon } from '../../../components/icons';
@@ -1224,7 +1225,16 @@ function NewCaseInner() {
                 ) : panErr ? (
                   <span className="field-err">{panErr}</span>
                 ) : panChk.loading ? (
-                  <span className="field-hint">Checking PAN with the income-tax registry…</span>
+                  <LookupProgress
+                    label="Checking the PAN with the income-tax registry"
+                    steps={[
+                      'Connecting to the income-tax registry…',
+                      'Fetching PAN holder details…',
+                      'Checking PAN–Aadhaar link status…',
+                      'Looking up GSTINs linked to this PAN…',
+                      'Almost done…',
+                    ]}
+                  />
                 ) : panChk.result?.verified ? (
                   <span className="field-ok">
                     Verified{panChk.result.name ? `: ${panChk.result.name}` : ''}
