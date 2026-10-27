@@ -337,6 +337,7 @@ export default function CaseDetail() {
       data={detail}
       docs={docFiles}
       activity={c.activity}
+      caseId={c.id}
       onClose={() => setShowDetails(false)}
     />
   );

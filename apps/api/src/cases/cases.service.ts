@@ -2415,6 +2415,23 @@ export class CasesService {
     return comment;
   }
 
+  /** Records that the vendor details were exported as a PDF (the export itself is made in the browser). */
+  async logExport(actor: AuthUser, id: string) {
+    const c = await this.prisma.case.findUnique({
+      where: { id },
+      select: { createdById: true, onBehalfOfId: true, assigneeId: true },
+    });
+    if (!c) throw new NotFoundException('Case not found.');
+    this.assertCanSee(actor, c);
+    await this.audit.append({
+      action: 'case.export_pdf',
+      entityType: 'Case',
+      entityId: id,
+      actorId: actor.id,
+    });
+    return { ok: true };
+  }
+
   async tickChecklist(actor: AuthUser, id: string, itemId: string, done: boolean) {
     const c = await this.prisma.case.findUnique({
       where: { id },

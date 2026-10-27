@@ -4481,3 +4481,74 @@ div.kyc__row {
 [data-step] .dk {
   margin-bottom: 24px;
 }
+
+/* ---------- Vendor details: Download PDF (print the dialog, every section at once) ---------- */
+.vdm__pdf {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+.vdm__printtitle {
+  display: none;
+}
+@media print {
+  @page {
+    margin: 12mm;
+  }
+  /* Only the dialog: hide everything that neither is nor contains it. */
+  body.vdm-printing *:not(:has(.vdm)):not(.vdm):not(.vdm *) {
+    display: none !important;
+  }
+  body.vdm-printing :has(.vdm) {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  body.vdm-printing .vdm {
+    position: static;
+    display: block;
+    padding: 0;
+    background: #fff;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    animation: none;
+  }
+  body.vdm-printing .vdm__panel {
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+    border-radius: 0;
+    box-shadow: none;
+    animation: none;
+  }
+  body.vdm-printing .vdm__body {
+    overflow: visible;
+    padding: 12px 0 0;
+    background: #fff;
+  }
+  body.vdm-printing .vdm__nav,
+  body.vdm-printing .vdm__close,
+  body.vdm-printing .vdm__pdf,
+  body.vdm-printing .vdm__grab {
+    display: none !important;
+  }
+  body.vdm-printing .vdm__printtitle {
+    display: block;
+    margin: 16px 0 8px;
+    font-size: 16px;
+    break-after: avoid;
+  }
+  body.vdm-printing .vdm__card,
+  body.vdm-printing .vdm__item {
+    break-inside: avoid;
+  }
+  body.vdm-printing * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

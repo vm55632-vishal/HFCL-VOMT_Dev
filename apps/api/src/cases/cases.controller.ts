@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   Patch,
   Post,
@@ -560,6 +561,13 @@ export class CasesController {
     @Body(new ZodValidationPipe(commentSchema)) body: z.infer<typeof commentSchema>,
   ) {
     return this.cases.comment(actor, id, body.body);
+  }
+
+  @Post(':id/export-log')
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Audit that the vendor details were downloaded as a PDF' })
+  async exportLog(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    await this.cases.logExport(actor, id);
   }
 
   @Post(':id/checklist')

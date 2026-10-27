@@ -1,6 +1,7 @@
 'use client';
 
-import { Fragment, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { apiFetch } from '../lib/api';
 import { Icon } from './icons';
 import { useModalBehavior } from './useModalBehavior';
 import { Card, Field, Group, titleCase, toneOf, type VendorDetailsData } from './DetailParts';
@@ -67,9 +68,12 @@ export default function VendorDetailsModal({
   data,
   docs,
   activity,
+  caseId,
   onClose,
 }: {
   data: VendorDetailsData;
+  /** When set, a PDF download is recorded in the case's audit log. */
+  caseId?: string;
   docs?: ModalDoc[];
   activity?: ModalActivity[];
   onClose: () => void;
@@ -99,6 +103,32 @@ export default function VendorDetailsModal({
   );
   const [tab, setTab] = useState<TabId>('overview');
 
+  // Download as PDF: every section is shown at once and the browser's print dialog saves it
+  // (Save as PDF). The print styles show only this dialog. The PDF holds exactly what is on
+  // screen, masked the same way, and the download is audited.
+  const [printing, setPrinting] = useState(false);
+  useEffect(() => {
+    if (!printing) return;
+    const title = document.title;
+    document.title = `${data.ref ?? 'Vendor'} - ${data.legalName ?? 'vendor details'}`;
+    document.body.classList.add('vdm-printing');
+    const done = () => {
+      document.title = title;
+      document.body.classList.remove('vdm-printing');
+      setPrinting(false);
+    };
+    window.addEventListener('afterprint', done, { once: true });
+    const t = setTimeout(() => window.print(), 50);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener('afterprint', done);
+    };
+  }, [printing, data.ref, data.legalName]);
+  function downloadPdf() {
+    if (caseId) void apiFetch(`/cases/${caseId}/export-log`, { method: 'POST' }).catch(() => {});
+    setPrinting(true);
+  }
+
   return (
     <div
       className="vdm"
@@ -123,6 +153,14 @@ export default function VendorDetailsModal({
             <h2 id="vd-title">Vendor Details</h2>
             <p className="vdm__subtitle">View complete vendor information and documents</p>
           </div>
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost vdm__pdf"
+            onClick={downloadPdf}
+            disabled={printing}
+          >
+            <Icon name="download" size={16} /> Download PDF
+          </button>
           <button
             ref={closeRef}
             type="button"
@@ -198,7 +236,8 @@ export default function VendorDetailsModal({
 
         <div className="vdm__body">
           {/* OVERVIEW */}
-          <div role="tabpanel" id="vdpanel-overview" hidden={tab !== 'overview'}>
+          <div role="tabpanel" id="vdpanel-overview" hidden={!printing && tab !== 'overview'}>
+            <h3 className="vdm__printtitle">Overview</h3>
             <Card title="Vendor identity" icon="user">
               <Field label="Legal name" value={data.legalName} />
               <Field label="Trade name" value={data.tradeName} />
@@ -368,7 +407,8 @@ export default function VendorDetailsModal({
           </div>
 
           {/* TAX DETAILS */}
-          <div role="tabpanel" id="vdpanel-tax" hidden={tab !== 'tax'}>
+          <div role="tabpanel" id="vdpanel-tax" hidden={!printing && tab !== 'tax'}>
+            <h3 className="vdm__printtitle">Tax details</h3>
             <Card
               title="PAN"
               icon="receipt"
@@ -427,7 +467,8 @@ export default function VendorDetailsModal({
           </div>
 
           {/* BANK DETAILS */}
-          <div role="tabpanel" id="vdpanel-bank" hidden={tab !== 'bank'}>
+          <div role="tabpanel" id="vdpanel-bank" hidden={!printing && tab !== 'bank'}>
+            <h3 className="vdm__printtitle">Bank details</h3>
             <Card
               title="Bank account"
               icon="bank"
@@ -450,7 +491,8 @@ export default function VendorDetailsModal({
 
           {/* DOCUMENTS */}
           {docs && (
-            <div role="tabpanel" id="vdpanel-documents" hidden={tab !== 'documents'}>
+            <div role="tabpanel" id="vdpanel-documents" hidden={!printing && tab !== 'documents'}>
+              <h3 className="vdm__printtitle">Documents</h3>
               <Card title={`Documents (${docs.length})`} icon="folder">
                 <div className="vdm__docs">
                   {docs.map((d) => {
@@ -487,7 +529,8 @@ export default function VendorDetailsModal({
 
           {/* ACTIVITY */}
           {activity && (
-            <div role="tabpanel" id="vdpanel-activity" hidden={tab !== 'activity'}>
+            <div role="tabpanel" id="vdpanel-activity" hidden={!printing && tab !== 'activity'}>
+              <h3 className="vdm__printtitle">Activity</h3>
               <Card title="Activity log" icon="clock">
                 <ul className="timeline" style={{ margin: 0 }}>
                   {activity.map((a, i) => (
