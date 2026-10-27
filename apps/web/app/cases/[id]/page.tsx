@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { vendorDisplayName } from '@vop/shared';
 import { apiFetch, ApiError, API_BASE } from '../../../lib/api';
 import { SkeletonLines } from '../../../components/Skeleton';
 import ParallelReview from '../../../components/ParallelReview';
@@ -56,6 +57,7 @@ interface CaseDetail {
   createdById: string;
   legalName: string;
   tradeName: string | null;
+  constitution?: string | null;
   businessAddress: string | null;
   stage: string;
   tier: string;
@@ -321,6 +323,8 @@ export default function CaseDetail() {
   const isLevelApprover = !!myStage && approvalLevels.includes(myStage);
   const isSapReviewer = roles.includes('sap');
   const detail = c as unknown as VendorDetailsData;
+  // Sole proprietorship: the trade name (unless "NA"); otherwise the legal name.
+  const vendorName = vendorDisplayName(c);
   // Documents shaped for the Vendor Details modal (download URL resolved here).
   const docFiles = docs.map((d) => ({
     id: d.id,
@@ -379,10 +383,10 @@ export default function CaseDetail() {
   const reviewHeader = (pill: ReactNode, actions: ReactNode) => (
     <div className="rv-head">
       <span className="vdm__avatar" aria-hidden="true">
-        {initials(c.legalName)}
+        {initials(vendorName)}
       </span>
       <div className="rv-head__text">
-        <h1>{c.legalName}</h1>
+        <h1>{vendorName}</h1>
         <div className="vdm__meta">
           <code>{c.ref}</code>
           {pill}
@@ -448,7 +452,7 @@ export default function CaseDetail() {
   const decisionDialog = dialog ? (
     <DecisionDialog
       kind={dialog.kind}
-      vendor={c.legalName}
+      vendor={vendorName}
       team={dialog.scope === 'stage' && myStage ? STAGE_LABELS[myStage] : undefined}
       onCancel={() => setDialog(null)}
       onSubmit={submitDialog}
@@ -803,7 +807,7 @@ export default function CaseDetail() {
       </p>
       <div className="topbar">
         <div>
-          <h1>{c.legalName}</h1>
+          <h1>{vendorName}</h1>
           <p className="lead">
             <code>{c.ref}</code> · <span className={`pill tier--${c.tier}`}>{c.tier}</span> · stage{' '}
             <span className="pill">

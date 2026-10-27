@@ -237,3 +237,21 @@ export function constitutionFromPan(
       return undefined;
   }
 }
+
+/** "NA", "N/A", "-" and blanks mean no trade name was given. */
+const NO_TRADE_NAME = /^(n\.?\s*\/?\s*a\.?|nil|none|-+)?$/i;
+
+/**
+ * The name a case is shown under: a sole proprietorship trades under its trade name (the legal
+ * name is the proprietor's own name), so that is shown unless none was given (blank or "NA").
+ * Every other constitution is shown under its legal name.
+ */
+export function vendorDisplayName(v: {
+  legalName?: string | null;
+  tradeName?: string | null;
+  constitution?: string | null;
+}): string {
+  const trade = (v.tradeName ?? '').trim();
+  if (v.constitution === 'sole_proprietorship' && !NO_TRADE_NAME.test(trade)) return trade;
+  return v.legalName ?? '';
+}

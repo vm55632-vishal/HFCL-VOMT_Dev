@@ -1,4 +1,9 @@
-import { constitutionFromGst, constitutionFromPan, managementRole } from './constitution';
+import {
+  constitutionFromGst,
+  constitutionFromPan,
+  managementRole,
+  vendorDisplayName,
+} from './constitution';
 
 describe('constitution', () => {
   it('asks about the right people for each constitution', () => {
@@ -34,5 +39,23 @@ describe('constitution', () => {
     expect(constitutionFromPan('ABCTE1234F')?.value).toBe('charitable_trust');
     expect(constitutionFromPan('ABCGE1234F')?.value).toBe('other');
     expect(constitutionFromPan('')).toBeUndefined();
+  });
+});
+
+describe('vendorDisplayName', () => {
+  const v = { legalName: 'INDRAMANI MISHRA', tradeName: 'KINE INFOTECH' };
+  it('shows a sole proprietorship under its trade name', () => {
+    expect(vendorDisplayName({ ...v, constitution: 'sole_proprietorship' })).toBe('KINE INFOTECH');
+  });
+  it('falls back to the legal name when the trade name is NA or blank', () => {
+    for (const tradeName of ['NA', 'n/a', 'N.A.', '-', '  ', null]) {
+      expect(vendorDisplayName({ ...v, tradeName, constitution: 'sole_proprietorship' })).toBe(
+        'INDRAMANI MISHRA',
+      );
+    }
+  });
+  it('shows every other constitution under its legal name', () => {
+    expect(vendorDisplayName({ ...v, constitution: 'private_limited' })).toBe('INDRAMANI MISHRA');
+    expect(vendorDisplayName({ ...v, constitution: null })).toBe('INDRAMANI MISHRA');
   });
 });
