@@ -3,14 +3,24 @@ import Link from 'next/link';
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { apiFetch, ApiError } from '../../../lib/api';
+import { apiFetch, apiUpload, ApiError } from '../../../lib/api';
 import {
   validatePan,
   validateGstin,
   validateIfsc,
   rcLimitsFromVehicles,
   RC_LIMIT_PER_VEHICLE,
+  CONSTITUTIONS,
+  CONSTITUTION_LABELS,
+  MANAGEMENT,
+  managementRole,
+  personPhotoDocType,
+  suggestConstitution,
 } from '@vop/shared';
+import ManagementPeople, {
+  EMPTY_PERSON,
+  type PersonRow,
+} from '../../../components/ManagementPeople';
 import { lookupIfsc } from '../../../lib/ifsc';
 import { LookupProgress } from '../../../components/LookupProgress';
 import {
@@ -133,30 +143,7 @@ interface MsmeResult {
   details?: MsmeDetails;
 }
 
-interface PartnerRow {
-  name: string;
-  dob: string;
-  maritalStatus: string;
-  gender: string;
-  fatherName: string;
-  spouseName: string;
-  pan: string;
-  address: string;
-  mobile: string;
-  pincode: string;
-}
-const EMPTY_PARTNER: PartnerRow = {
-  name: '',
-  dob: '',
-  maritalStatus: '',
-  gender: '',
-  fatherName: '',
-  spouseName: '',
-  pan: '',
-  address: '',
-  mobile: '',
-  pincode: '',
-};
+type PartnerRow = PersonRow;
 
 interface RefRow {
   contactName: string;
@@ -241,6 +228,7 @@ const initial = {
   addressState: '',
   addressCity: '',
   addressPostalCode: '',
+  constitution: '',
   contactName: '',
   contactEmail: '',
   contactPhone: '',
@@ -385,6 +373,7 @@ function NewCaseInner() {
           categoryKey: str(c.categoryKey),
           subCategoryKey: str(c.subCategoryKey),
           legalName: str(c.legalName),
+          constitution: str(c.constitution),
           partners: Array.isArray(c.partners)
             ? (c.partners as Record<string, unknown>[]).map((p) => ({
                 name: str(p.name),
@@ -396,7 +385,10 @@ function NewCaseInner() {
                 pan: str(p.pan),
                 address: str(p.address),
                 mobile: str(p.mobile),
+                residencePhone: str(p.residencePhone),
                 pincode: str(p.pincode),
+                contact: str(p.contact),
+                officeAddress: str(p.officeAddress),
               }))
             : [],
           references: padRefs(
@@ -1004,18 +996,80 @@ function NewCaseInner() {
     }
   }
 
-  // --- Management structure (partners) ---
+  // --- Management structure: proprietor / partners / directors / Karta, by constitution ---
+  const mgmtRole = managementRole(f.constitution);
+  const photoDocType = mgmtRole && MANAGEMENT[mgmtRole].photo ? personPhotoDocType(mgmtRole) : null;
+  // Suggest the constitution from the GST registration or the PAN, until the proposer picks one.
+  const gstConstitution = gstChk.result?.details?.constitutionOfBusiness;
+  useEffect(() => {
+    if (!panVerified || f.constitution) return;
+    const guess = suggestConstitution(f.pan, gstConstitution);
+    if (guess) setF((prev) => (prev.constitution ? prev : { ...prev, constitution: guess }));
+  }, [panVerified, f.pan, f.constitution, gstConstitution]);
+  function setConstitution(value: string) {
+    setF((prev) => {
+      const role = managementRole(value);
+      // A proprietor or Karta is one person: keep the first row (or start one).
+      const partners = !role
+        ? []
+        : MANAGEMENT[role].single
+          ? [prev.partners[0] ?? { ...EMPTY_PERSON }]
+          : prev.partners;
+      return { ...prev, constitution: value, partners };
+    });
+  }
+  // The photograph (Karta of an HUF) is uploaded to the draft and malware-scanned by the API.
+  const [photo, setPhoto] = useState<{ name?: string; busy: boolean; error?: string }>({
+    busy: false,
+  });
+  useEffect(() => {
+    if (!draftId || !photoDocType) return;
+    let cancelled = false;
+    void apiFetch<{ docType: string; filename: string }[]>(`/cases/${draftId}/documents`)
+      .then((docs) => {
+        const d = docs.filter((x) => x.docType === photoDocType).pop();
+        if (!cancelled && d) setPhoto((p) => ({ ...p, name: d.filename }));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [draftId, photoDocType]);
+  async function uploadPhoto(file: File) {
+    if (!photoDocType) return;
+    setPhoto((p) => ({ ...p, busy: true, error: undefined }));
+    try {
+      // The photo belongs to the case, so the draft is saved first.
+      if (!draftIdRef.current) await flushDraft();
+      const id = draftIdRef.current;
+      if (!id) throw new Error('Save the draft first (choose a vendor category).');
+      const form = new FormData();
+      form.append('file', file);
+      form.append('docType', photoDocType);
+      await apiUpload(`/cases/${id}/documents`, form);
+      setPhoto({ name: file.name, busy: false });
+    } catch (err) {
+      setPhoto((p) => ({
+        ...p,
+        busy: false,
+        error: err instanceof Error ? err.message : 'Upload failed.',
+      }));
+    }
+  }
+
   function addPartner() {
-    setF((prev) => ({ ...prev, partners: [...prev.partners, { ...EMPTY_PARTNER }] }));
+    setF((prev) => ({ ...prev, partners: [...prev.partners, { ...EMPTY_PERSON }] }));
   }
   function removePartner(i: number) {
     setF((prev) => ({ ...prev, partners: prev.partners.filter((_, j) => j !== i) }));
   }
   function setPartner(i: number, patch: Partial<PartnerRow>) {
-    setF((prev) => ({
-      ...prev,
-      partners: prev.partners.map((p, j) => (j === i ? { ...p, ...patch } : p)),
-    }));
+    setF((prev) => {
+      // The single proprietor / Karta form shows an empty person before any row exists.
+      const rows =
+        i < prev.partners.length ? prev.partners : [...prev.partners, { ...EMPTY_PERSON }];
+      return { ...prev, partners: rows.map((p, j) => (j === i ? { ...p, ...patch } : p)) };
+    });
   }
 
   // --- References (at least two) ---
@@ -1150,24 +1204,31 @@ function NewCaseInner() {
       setError('Add at least two references before submitting.');
       return;
     }
+    if (!f.constitution) {
+      setError('Select the type of constitution under Management structure.');
+      setStep(3);
+      return;
+    }
+    if (mgmtRole && photoDocType && !photo.name) {
+      setError(`Upload the photograph of the ${MANAGEMENT[mgmtRole].noun}.`);
+      setStep(3);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const payload: Record<string, unknown> = { ...f };
-      payload.partners = f.partners.map((p) => ({
-        name: p.name.trim(),
-        dob: p.dob,
-        maritalStatus: p.maritalStatus,
-        gender: p.gender,
-        fatherName: p.fatherName.trim(),
-        ...(p.maritalStatus === 'Married' && p.spouseName.trim()
-          ? { spouseName: p.spouseName.trim() }
-          : {}),
-        pan: p.pan.trim().toUpperCase(),
-        address: p.address.trim(),
-        mobile: p.mobile.trim(),
-        pincode: p.pincode.trim(),
-      }));
+      // Only the fields asked for this constitution are sent (e.g. no mobile for a proprietor).
+      const asked = mgmtRole ? MANAGEMENT[mgmtRole].fields : [];
+      payload.partners = (mgmtRole ? f.partners : []).map((p) => {
+        const row: Record<string, string> = {};
+        for (const k of asked) {
+          const v = k === 'pan' ? p.pan.trim().toUpperCase() : p[k].trim();
+          if (k === 'spouseName' && p.maritalStatus !== 'Married') continue;
+          if (v) row[k] = v;
+        }
+        return row;
+      });
       payload.teamOverrides = teamOv;
       if (proposerId) payload.proposerId = proposerId;
       payload.references = f.references.map((r) => ({
@@ -2117,178 +2178,64 @@ function NewCaseInner() {
               <section className="card">
                 <h2>Management structure</h2>
                 <p className="section-intro">
-                  List every partner or director with their residential details. Personal details
-                  are encrypted when saved.
+                  Choose the vendor&apos;s type of constitution; the details asked depend on it.
+                  Personal details are encrypted when saved.
                 </p>
-                {f.partners.length > 0 && (
-                  <div className="partners__scroll">
-                    <table className="partners__tbl">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Name of partner</th>
-                          <th>Date of birth</th>
-                          <th>Marital status</th>
-                          <th>Gender</th>
-                          <th>Father&apos;s name</th>
-                          <th>Spouse name</th>
-                          <th>PAN</th>
-                          <th>Residence address</th>
-                          <th>Personal mobile no.</th>
-                          <th>Residence pin code</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {f.partners.map((p, i) => (
-                          <tr key={i}>
-                            <td className="partners__n">{i + 1}</td>
-                            <td>
-                              <input
-                                aria-label={`Partner ${i + 1} name`}
-                                value={p.name}
-                                maxLength={200}
-                                required
-                                onChange={(e) => setPartner(i, { name: e.target.value })}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="date"
-                                aria-label={`Partner ${i + 1} date of birth`}
-                                value={p.dob}
-                                max={new Date().toISOString().slice(0, 10)}
-                                required
-                                onChange={(e) => setPartner(i, { dob: e.target.value })}
-                              />
-                            </td>
-                            <td>
-                              <select
-                                aria-label={`Partner ${i + 1} marital status`}
-                                value={p.maritalStatus}
-                                required
-                                onChange={(e) =>
-                                  setPartner(i, {
-                                    maritalStatus: e.target.value,
-                                    ...(e.target.value !== 'Married' ? { spouseName: '' } : {}),
-                                  })
-                                }
-                              >
-                                <option value="">Select</option>
-                                <option>Single</option>
-                                <option>Married</option>
-                                <option>Divorced</option>
-                                <option>Widowed</option>
-                              </select>
-                            </td>
-                            <td>
-                              <select
-                                aria-label={`Partner ${i + 1} gender`}
-                                value={p.gender}
-                                required
-                                onChange={(e) => setPartner(i, { gender: e.target.value })}
-                              >
-                                <option value="">Select</option>
-                                <option>Male</option>
-                                <option>Female</option>
-                                <option>Other</option>
-                              </select>
-                            </td>
-                            <td>
-                              <input
-                                aria-label={`Partner ${i + 1} father's name`}
-                                value={p.fatherName}
-                                maxLength={200}
-                                required
-                                onChange={(e) => setPartner(i, { fatherName: e.target.value })}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                aria-label={`Partner ${i + 1} spouse name`}
-                                value={p.spouseName}
-                                maxLength={200}
-                                disabled={p.maritalStatus !== 'Married'}
-                                required={p.maritalStatus === 'Married'}
-                                placeholder={p.maritalStatus === 'Married' ? '' : 'n/a'}
-                                onChange={(e) => setPartner(i, { spouseName: e.target.value })}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                aria-label={`Partner ${i + 1} PAN`}
-                                value={p.pan}
-                                maxLength={10}
-                                pattern="[A-Za-z]{5}[0-9]{4}[A-Za-z]"
-                                title="PAN: five letters, four digits, one letter (e.g. ABCDE1234F)"
-                                required
-                                autoComplete="off"
-                                onChange={(e) =>
-                                  setPartner(i, { pan: e.target.value.toUpperCase() })
-                                }
-                              />
-                            </td>
-                            <td>
-                              <textarea
-                                aria-label={`Partner ${i + 1} residence address`}
-                                value={p.address}
-                                rows={2}
-                                maxLength={500}
-                                required
-                                onChange={(e) => setPartner(i, { address: e.target.value })}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="tel"
-                                inputMode="numeric"
-                                aria-label={`Partner ${i + 1} personal mobile number`}
-                                value={p.mobile}
-                                maxLength={10}
-                                pattern="[6-9][0-9]{9}"
-                                title="10-digit Indian mobile number"
-                                required
-                                onChange={(e) =>
-                                  setPartner(i, { mobile: e.target.value.replace(/\D/g, '') })
-                                }
-                              />
-                            </td>
-                            <td>
-                              <input
-                                inputMode="numeric"
-                                aria-label={`Partner ${i + 1} residence pin code`}
-                                value={p.pincode}
-                                maxLength={6}
-                                pattern="[0-9]{6}"
-                                title="6-digit pin code"
-                                required
-                                onChange={(e) =>
-                                  setPartner(i, { pincode: e.target.value.replace(/\D/g, '') })
-                                }
-                              />
-                            </td>
-                            <td>
-                              <button
-                                type="button"
-                                className="btn btn--sm btn--ghost"
-                                aria-label={`Remove partner ${i + 1}`}
-                                onClick={() => removePartner(i)}
-                              >
-                                Remove
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                {f.partners.length === 0 && <p className="muted">No partners added yet.</p>}
-                <div className="req__actions">
-                  <button type="button" className="btn btn--sm" onClick={addPartner}>
-                    + Add partner
-                  </button>
+                <div className="grid2">
+                  <label>
+                    Type of constitution
+                    <select
+                      value={f.constitution}
+                      required
+                      onChange={(e) => setConstitution(e.target.value)}
+                    >
+                      <option value="">Select</option>
+                      {CONSTITUTIONS.map((c) => (
+                        <option key={c} value={c}>
+                          {CONSTITUTION_LABELS[c]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
+                {mgmtRole && (
+                  <>
+                    <h3>{MANAGEMENT[mgmtRole].noun} details</h3>
+                    <ManagementPeople
+                      role={mgmtRole}
+                      rows={f.partners}
+                      onChange={setPartner}
+                      onAdd={addPartner}
+                      onRemove={removePartner}
+                      photo={
+                        photoDocType && (
+                          <label className="span2">
+                            Photograph of the {MANAGEMENT[mgmtRole].noun} (JPG or PNG)
+                            <input
+                              type="file"
+                              accept="image/jpeg,image/png"
+                              disabled={photo.busy}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) void uploadPhoto(file);
+                                e.target.value = '';
+                              }}
+                            />
+                            {photo.busy ? (
+                              <span className="muted">Uploading and scanning…</span>
+                            ) : photo.name ? (
+                              <span className="muted">Uploaded: {photo.name}</span>
+                            ) : null}
+                            {photo.error ? <span className="field-err">{photo.error}</span> : null}
+                          </label>
+                        )
+                      }
+                    />
+                  </>
+                )}
+                {f.constitution && !mgmtRole && (
+                  <p className="muted">No management details are needed for this constitution.</p>
+                )}
               </section>
 
               <section className="card">

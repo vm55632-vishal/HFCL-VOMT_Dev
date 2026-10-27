@@ -5,6 +5,13 @@ import { Icon } from './icons';
 import { useModalBehavior } from './useModalBehavior';
 import { Card, Field, Group, titleCase, toneOf, type VendorDetailsData } from './DetailParts';
 import { TEAM_GROUPS } from '../lib/team-structure';
+import {
+  CONSTITUTION_LABELS,
+  MANAGEMENT,
+  PERSON_FIELD_LABELS,
+  isConstitution,
+  type ManagementRole,
+} from '@vop/shared';
 
 // Re-exported so existing imports (`import VendorDetailsModal, { type VendorDetailsData }`) keep working.
 export type { VendorDetailsData };
@@ -78,6 +85,9 @@ export default function VendorDetailsModal({
   const pan = r.pan?.fields;
   const panStatus = pan?.panStatus ?? r.pan?.status ?? undefined;
   const gstVerified = !!(r.gst?.verified || /active|verified/i.test(gst?.gstStatus ?? ''));
+  // Columns follow the people asked about (proprietor / partner / director / Karta).
+  const mgmtRole = data.partners?.[0]?.role as ManagementRole | undefined;
+  const mgmt = MANAGEMENT[mgmtRole && mgmtRole in MANAGEMENT ? mgmtRole : 'partner'];
 
   const tabs = useMemo<{ id: TabId; label: string; count?: number }[]>(
     () => [
@@ -209,38 +219,33 @@ export default function VendorDetailsModal({
             </Card>
 
             {data.partners && data.partners.length > 0 && (
-              <Card title={`Management structure (${data.partners.length})`} icon="user">
+              <Card
+                title={`Management structure — ${mgmt.noun}${data.partners.length > 1 ? 's' : ''} (${data.partners.length})`}
+                icon="user"
+              >
+                {data.constitution && isConstitution(data.constitution) && (
+                  <Field
+                    label="Type of constitution"
+                    value={CONSTITUTION_LABELS[data.constitution]}
+                  />
+                )}
                 <div style={{ gridColumn: '1 / -1', overflowX: 'auto' }}>
                   <table className="partners__tbl" style={{ minWidth: 1100 }}>
                     <thead>
                       <tr>
-                        <th>Name</th>
-                        <th>Date of birth</th>
-                        <th>Marital status</th>
-                        <th>Gender</th>
-                        <th>Father&apos;s name</th>
-                        <th>Spouse name</th>
-                        <th>PAN</th>
-                        <th>Residence address</th>
-                        <th>Mobile</th>
-                        <th>Pin code</th>
+                        {mgmt.fields.map((k) => (
+                          <th key={k}>{PERSON_FIELD_LABELS[k]}</th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
                       {data.partners.map((p, i) => (
                         <tr key={p.id ?? i}>
-                          <td>{p.name}</td>
-                          <td>{p.dob ?? '—'}</td>
-                          <td>{p.maritalStatus ?? '—'}</td>
-                          <td>{p.gender ?? '—'}</td>
-                          <td>{p.fatherName ?? '—'}</td>
-                          <td>{p.spouseName || '—'}</td>
-                          <td>
-                            <code>{p.pan ?? '—'}</code>
-                          </td>
-                          <td>{p.address ?? '—'}</td>
-                          <td>{p.mobile ?? '—'}</td>
-                          <td>{p.pincode ?? '—'}</td>
+                          {mgmt.fields.map((k) => (
+                            <td key={k}>
+                              {k === 'pan' ? <code>{p.pan ?? '—'}</code> : p[k] || '—'}
+                            </td>
+                          ))}
                         </tr>
                       ))}
                     </tbody>

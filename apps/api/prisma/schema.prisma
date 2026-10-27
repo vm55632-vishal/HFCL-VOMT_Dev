@@ -594,6 +594,8 @@ model CaseGeneral {
   addressState      String? @map("address_state")
   addressCity       String? @map("address_city")
   addressPostalCode String? @map("address_postal_code")
+  // type of constitution (sole_proprietorship, partnership, private_limited, huf, ...)
+  constitution      String?
 
   // business single point of contact (SPOC)
   contactName  String? @map("contact_name")
@@ -854,14 +856,16 @@ model CaseVerificationResponse {
   @@map("case_verification_response")
 }
 
-/// Management structure: one row per partner / director of the vendor, linked to the case. Personal
-/// data, so DOB, PAN, residence address and mobile are envelope-encrypted at rest (PAN also carries
-/// a blind index for duplicate / conflict checks). Rows are replaced wholesale when the proposer
-/// edits and resubmits the case.
+/// Management structure: one row per proprietor / partner / director / Karta of the vendor (which
+/// one follows the vendor's type of constitution), linked to the case. Personal data, so DOB, PAN,
+/// addresses and phone numbers are envelope-encrypted at rest (PAN also carries a blind index for
+/// duplicate / conflict checks). Rows are replaced wholesale when the proposer edits and resubmits.
 model PartnerDetail {
   id                  String   @id @db.Char(26)
   caseId              String   @map("case_id") @db.Char(26)
   position            Int      @default(0)
+  /// proprietor | partner | director | karta
+  role                String   @default("partner")
   name                String
   dobEnc              String   @map("dob_enc")
   maritalStatus       String   @map("marital_status")
@@ -871,7 +875,11 @@ model PartnerDetail {
   panEnc              String   @map("pan_enc")
   panBlindIndex       String   @map("pan_blind_index")
   residenceAddressEnc String   @map("residence_address_enc")
-  mobileEnc           String   @map("mobile_enc")
+  mobileEnc           String?  @map("mobile_enc")
+  residencePhoneEnc   String?  @map("residence_phone_enc")
+  /// director's contact number and address
+  contactEnc          String?  @map("contact_enc")
+  officeAddressEnc    String?  @map("office_address_enc")
   pincode             String
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)

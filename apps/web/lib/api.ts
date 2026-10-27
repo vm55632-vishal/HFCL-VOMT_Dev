@@ -144,4 +144,27 @@ function send(
   });
 }
 
+/** Upload a file (multipart) to the API with the same login token and company as apiFetch. */
+export async function apiUpload<T = unknown>(path: string, form: FormData): Promise<T> {
+  const token = supabaseAuthEnabled ? await getAccessToken() : null;
+  const entity = getActiveEntity();
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (entity) headers[ENTITY_HEADER] = entity;
+  // No Content-Type: the browser sets the multipart boundary itself.
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: form,
+  });
+  const text = await res.text();
+  const body = text ? (JSON.parse(text) as unknown) : null;
+  if (!res.ok) {
+    const err = body && typeof body === 'object' && 'error' in body ? body.error : null;
+    throw new ApiError(res.status, err ? String(err) : `Upload failed (${res.status})`);
+  }
+  return body as T;
+}
+
 export const oidcStartUrl = `${API_BASE}/auth/oidc/start`;

@@ -15,3 +15,4 @@ export * from './red-flags';
 export * from './money';
 export * from './kyc';
 export * from './entity';
+export * from './constitution';

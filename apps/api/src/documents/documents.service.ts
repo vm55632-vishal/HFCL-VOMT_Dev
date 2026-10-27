@@ -90,6 +90,10 @@ export class DocumentsService {
         'Only PDF, JPG or PNG files are allowed (validated by content).',
       );
     }
+    // A photograph (e.g. of the Karta) must be an image.
+    if (docType.endsWith('_photo') && fileType === 'pdf') {
+      throw new BadRequestException('The photograph must be a JPG or PNG image.');
+    }
 
     const sha256 = createHash('sha256').update(file.buffer).digest('hex');
 

@@ -22,6 +22,10 @@ import {
   validatePan,
   validateGstin,
   validateIfsc,
+  CONSTITUTIONS,
+  MANAGEMENT,
+  PERSON_FIELD_LABELS,
+  managementRole,
 } from '@vop/shared';
 import { CurrentUser, type AuthUser } from '../auth/auth-user';
 import { RequirePermissions } from '../authz/permissions.decorator';
@@ -29,7 +33,15 @@ import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { BULK_ACTIONS, CasesService, type CaseCreateInput, type DraftInput } from './cases.service';
 import { TEAM_OVERRIDE_KEYS } from './team-structure.service';
 
-// Management structure — one row per partner. All personal data; stored encrypted.
+const phone = (what: string) =>
+  z
+    .string()
+    .trim()
+    .regex(/^[0-9+\-\s()]{6,15}$/, `Enter a valid ${what}.`)
+    .optional();
+
+// Management structure — one row per proprietor / partner / director / Karta. All personal data;
+// stored encrypted. Which fields are required depends on the constitution (checked on the case).
 export const partnerSchema = z
   .object({
     name: z.string().trim().min(1).max(200),
@@ -45,12 +57,18 @@ export const partnerSchema = z
     spouseName: z.string().trim().max(200).optional(),
     pan: z.string().refine((v) => validatePan(v).valid, 'Enter a valid PAN.'),
     address: z.string().trim().min(1).max(500),
-    mobile: z.string().regex(/^[6-9]\d{9}$/, 'Mobile must be a 10-digit Indian number.'),
+    mobile: z
+      .string()
+      .regex(/^[6-9]\d{9}$/, 'Mobile must be a 10-digit Indian number.')
+      .optional(),
+    residencePhone: phone('residence phone number'),
+    contact: phone('contact number'),
+    officeAddress: z.string().trim().max(500).optional(),
     pincode: z.string().regex(/^\d{6}$/, 'Pin code must be 6 digits.'),
   })
   .strict()
   .refine((p) => p.maritalStatus !== 'Married' || !!p.spouseName, {
-    message: 'Spouse name is required for a married partner.',
+    message: 'Spouse name is required when married.',
     path: ['spouseName'],
   });
 
@@ -82,6 +100,9 @@ const draftPartnerSchema = z
     pan: optStr(10),
     address: optStr(500),
     mobile: optStr(10),
+    residencePhone: optStr(20),
+    contact: optStr(20),
+    officeAddress: optStr(500),
     pincode: optStr(6),
   })
   .strict();
@@ -114,6 +135,7 @@ const draftSchema = z
     addressState: optStr(100),
     addressCity: optStr(100),
     addressPostalCode: optStr(12),
+    constitution: optStr(40),
     contactName: optStr(200),
     contactEmail: optStr(200),
     contactPhone: optStr(30),
@@ -186,7 +208,7 @@ export const rcLimitSchema = z
   })
   .strict();
 
-const createSchema = z
+export const createSchema = z
   .object({
     categoryKey: z.string().min(1),
     partners: z.array(partnerSchema).max(50).optional(),
@@ -202,6 +224,9 @@ const createSchema = z
     addressState: z.string().trim().max(100).optional(),
     addressCity: z.string().trim().max(100).optional(),
     addressPostalCode: z.string().trim().max(12).optional(),
+    constitution: z.enum(CONSTITUTIONS, {
+      errorMap: () => ({ message: 'Select the type of constitution.' }),
+    }),
     contactName: z.string().optional(),
     contactEmail: z.string().email().optional(),
     contactPhone: z.string().optional(),
@@ -291,6 +316,35 @@ const createSchema = z
           message: india ? 'PIN code must be 6 digits.' : 'Enter a valid postal code.',
         });
       }
+    }
+    // Management structure: the people asked about follow the type of constitution.
+    const role = managementRole(v.constitution);
+    if (role) {
+      const def = MANAGEMENT[role];
+      const people = v.partners ?? [];
+      if (people.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['partners'],
+          message: `Enter the details of the ${def.noun.toLowerCase()}.`,
+        });
+      } else if (def.single && people.length > 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['partners'],
+          message: `Enter the details of one ${def.noun.toLowerCase()} only.`,
+        });
+      }
+      people.forEach((p, i) => {
+        for (const k of def.fields) {
+          if (k === 'spouseName' || p[k]?.trim()) continue;
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['partners', i, k],
+            message: `Enter the ${PERSON_FIELD_LABELS[k].toLowerCase()}.`,
+          });
+        }
+      });
     }
     if (v.signatoryPan && !validatePan(v.signatoryPan).valid) {
       ctx.addIssue({

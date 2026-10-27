@@ -23,6 +23,10 @@ import {
   isApprovalLevel,
   nextAfterApproval,
   normaliseApprovalLevels,
+  isConstitution,
+  managementRole,
+  MANAGEMENT,
+  personPhotoDocType,
   REVIEW_STAGES,
   SAP_STAGE,
   STAGE_LABELS,
@@ -141,7 +145,11 @@ interface PartnerRow {
   spouseName: string | null;
   panEnc: string;
   residenceAddressEnc: string;
-  mobileEnc: string;
+  mobileEnc: string | null;
+  role: string;
+  residencePhoneEnc: string | null;
+  contactEnc: string | null;
+  officeAddressEnc: string | null;
   pincode: string;
 }
 
@@ -168,7 +176,11 @@ export interface PartnerInput {
   spouseName?: string;
   pan: string;
   address: string;
-  mobile: string;
+  mobile?: string;
+  residencePhone?: string;
+  /** Director's contact number and address. */
+  contact?: string;
+  officeAddress?: string;
   pincode: string;
 }
 
@@ -226,6 +238,8 @@ export interface CaseCreateInput {
   addressState?: string;
   addressCity?: string;
   addressPostalCode?: string;
+  /** Type of constitution; decides who the management structure lists. */
+  constitution?: string;
   contactName?: string;
   contactEmail?: string;
   contactPhone?: string;
@@ -388,14 +402,23 @@ export class CasesService {
     }));
   }
 
-  /** Rows for partner_details (nested under the case). DOB, PAN, address and mobile are encrypted. */
-  private async buildPartnerRows(partners?: DraftPartnerInput[]) {
+  /**
+   * Rows for partner_details (nested under the case): the proprietor, partners, directors or Karta,
+   * as the constitution asks. DOB, PAN, addresses and phone numbers are encrypted.
+   */
+  private async buildPartnerRows(partners?: DraftPartnerInput[], constitution?: string) {
+    // Older drafts have no constitution yet: their rows are partners, as before.
+    const role = constitution ? managementRole(constitution) : 'partner';
+    if (!role) return [];
+    const people = (partners ?? []).slice(0, MANAGEMENT[role].single ? 1 : undefined);
+    const enc = async (v?: string) => (v?.trim() ? this.crypto.encryptToString(v.trim()) : null);
     return Promise.all(
-      (partners ?? []).map(async (p, i) => {
+      people.map(async (p, i) => {
         const pan = (p.pan ?? '').trim().toUpperCase();
         return {
           id: newId(),
           position: i,
+          role,
           name: (p.name ?? '').trim(),
           maritalStatus: p.maritalStatus ?? '',
           gender: p.gender ?? '',
@@ -406,7 +429,10 @@ export class CasesService {
           panEnc: await this.crypto.encryptToString(pan),
           panBlindIndex: pan ? this.blind.index(pan) : '',
           residenceAddressEnc: await this.crypto.encryptToString((p.address ?? '').trim()),
-          mobileEnc: await this.crypto.encryptToString(p.mobile ?? ''),
+          mobileEnc: await enc(p.mobile),
+          residencePhoneEnc: await enc(p.residencePhone),
+          contactEnc: await enc(p.contact),
+          officeAddressEnc: await enc(p.officeAddress),
         };
       }),
     );
@@ -422,6 +448,7 @@ export class CasesService {
       addressState: input.addressState?.trim() || null,
       addressCity: input.addressCity?.trim() || null,
       addressPostalCode: input.addressPostalCode?.trim() || null,
+      constitution: isConstitution(input.constitution) ? input.constitution : null,
       contactName: input.contactName ?? null,
       contactEmail: input.contactEmail ?? null,
       contactPhone: input.contactPhone ?? null,
@@ -755,6 +782,7 @@ export class CasesService {
     }
     // Management structure: full details only for viewers allowed to see sensitive data; everyone
     // else gets just name / gender / marital status with the PAN masked (the rest is personal data).
+    const dec = async (v: string | null) => (v ? this.crypto.decryptFromString(v) : null);
     out.partners = await Promise.all(
       partnerRows.map(async (p) =>
         reveal
@@ -768,11 +796,16 @@ export class CasesService {
               spouseName: p.spouseName,
               pan: await this.crypto.decryptFromString(p.panEnc),
               address: await this.crypto.decryptFromString(p.residenceAddressEnc),
-              mobile: await this.crypto.decryptFromString(p.mobileEnc),
+              mobile: await dec(p.mobileEnc),
+              residencePhone: await dec(p.residencePhoneEnc),
+              contact: await dec(p.contactEnc),
+              officeAddress: await dec(p.officeAddressEnc),
               pincode: p.pincode,
+              role: p.role,
             }
           : {
               id: p.id,
+              role: p.role,
               name: p.name,
               gender: p.gender,
               maritalStatus: p.maritalStatus,
@@ -890,6 +923,18 @@ export class CasesService {
     return flags;
   }
 
+  /** The Karta's photograph must be on the case before an HUF case is submitted. */
+  private async assertPersonPhoto(caseId: string, constitution?: string) {
+    const role = managementRole(constitution);
+    if (!role || !MANAGEMENT[role].photo) return;
+    const photo = await this.prisma.document.count({
+      where: { caseId, docType: personPhotoDocType(role), status: 'CLEAN' },
+    });
+    if (!photo) {
+      throw new BadRequestException(`Upload the photograph of the ${MANAGEMENT[role].noun}.`);
+    }
+  }
+
   /**
    * New cases may only use a category that is offered on the intake form (active). A case that is
    * already on a category keeps it even if the category was switched off later.
@@ -914,6 +959,11 @@ export class CasesService {
     const gstIdx = input.gstin ? this.blind.index(input.gstin) : null;
     const bankIdx = input.bankAccount ? this.blind.index(input.bankAccount) : null;
     const id = newId();
+    // A photograph has to be uploaded to the case first, so this person needs a saved draft.
+    const photoRole = managementRole(input.constitution);
+    if (photoRole && MANAGEMENT[photoRole].photo) {
+      throw new BadRequestException(`Upload the photograph of the ${MANAGEMENT[photoRole].noun}.`);
+    }
 
     // Phase A — independent lookups run in parallel. Against a remote database every query is a
     // network round trip, so doing these one after another was the main cause of slow submits.
@@ -922,7 +972,7 @@ export class CasesService {
       this.assertSubCategory(input),
       this.nextRef(),
       this.buildGeneralData(input),
-      this.buildPartnerRows(input.partners),
+      this.buildPartnerRows(input.partners, input.constitution),
       this.team.resolve(proposer, input.teamOverrides),
       // The new case doesn't exist yet, so it can't match itself — no exclusion needed.
       this.detectDuplicates({
@@ -1618,6 +1668,7 @@ export class CasesService {
       addressState: t(input.addressState),
       addressCity: t(input.addressCity),
       addressPostalCode: t(input.addressPostalCode),
+      constitution: isConstitution(input.constitution) ? input.constitution : null,
       contactName: t(input.contactName),
       contactEmail: t(input.contactEmail),
       contactPhone: t(input.contactPhone),
@@ -1683,7 +1734,7 @@ export class CasesService {
       this.categories.get(input.categoryKey).then((cat) => this.assertOffered(cat)),
       this.nextRef(),
       this.draftGeneral(input),
-      this.buildPartnerRows(input.partners),
+      this.buildPartnerRows(input.partners, input.constitution),
       this.team.resolve(proposer, input.teamOverrides),
     ]);
     const published = await this.workflows.getPublished(category.workflowKey);
@@ -1760,7 +1811,7 @@ export class CasesService {
       // A draft already on a category that was later switched off may stay on it.
       this.categories.get(input.categoryKey).then((cat) => this.assertOffered(cat, c.categoryKey)),
       this.draftGeneral(input),
-      this.buildPartnerRows(input.partners),
+      this.buildPartnerRows(input.partners, input.constitution),
       this.team.resolve(proposer, input.teamOverrides),
     ]);
     const published = await this.workflows.getPublished(category.workflowKey);
@@ -1876,6 +1927,7 @@ export class CasesService {
       this.assertSubCategory(input),
     ]);
     this.assertOffered(category, c.categoryKey);
+    await this.assertPersonPhoto(id, input.constitution);
     const def = await this.workflows.publishedDefinition(category.workflowKey);
     // First submission takes the category's approval levels; a resubmitted case keeps its own.
     const approvalLevels = isDraft
@@ -1920,6 +1972,7 @@ export class CasesService {
       addressState: input.addressState?.trim() || null,
       addressCity: input.addressCity?.trim() || null,
       addressPostalCode: input.addressPostalCode?.trim() || null,
+      constitution: isConstitution(input.constitution) ? input.constitution : null,
       contactName: input.contactName ?? null,
       contactEmail: input.contactEmail ?? null,
       contactPhone: input.contactPhone ?? null,
@@ -1998,7 +2051,10 @@ export class CasesService {
               },
             }
           : {}),
-        partners: { deleteMany: {}, create: await this.buildPartnerRows(input.partners) },
+        partners: {
+          deleteMany: {},
+          create: await this.buildPartnerRows(input.partners, input.constitution),
+        },
         vendorReferences: { deleteMany: {}, create: this.buildReferenceRows(input.references) },
         rcLimits: { deleteMany: {}, create: this.buildRcLimitRows(input.rcLimits) },
         ...(teamRow

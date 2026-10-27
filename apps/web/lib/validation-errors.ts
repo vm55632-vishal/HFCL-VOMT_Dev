@@ -5,7 +5,7 @@
  */
 
 const FIELD_LABELS: Record<string, string> = {
-  // partners
+  // management structure (proprietor / partners / directors / Karta)
   name: 'name',
   dob: 'date of birth',
   maritalStatus: 'marital status',
@@ -15,7 +15,10 @@ const FIELD_LABELS: Record<string, string> = {
   pan: 'PAN',
   address: 'residence address',
   mobile: 'mobile number',
+  residencePhone: 'residence phone',
   pincode: 'pin code',
+  contact: "director's contact number",
+  officeAddress: "director's address",
   // references
   contactName: 'contact name',
   businessName: 'legal name of the business',
@@ -29,7 +32,7 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 const LIST_ROOTS: Record<string, { noun: string; step: number }> = {
-  partners: { noun: 'Partner', step: 3 },
+  partners: { noun: 'Management structure, person', step: 3 },
   references: { noun: 'Reference', step: 3 },
   rcLimits: { noun: 'RC limit', step: 3 },
 };
@@ -48,6 +51,8 @@ const STEP_BY_ROOT: Record<string, number> = {
   branch: 0,
   teamOverrides: 1,
   proposerId: 1,
+  constitution: 3,
+  partners: 3,
 };
 
 const words = (key: string) =>

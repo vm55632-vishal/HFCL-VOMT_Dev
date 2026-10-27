@@ -1,4 +1,4 @@
-import { partnerSchema, rcLimitSchema, referenceSchema } from './cases.controller';
+import { createSchema, partnerSchema, rcLimitSchema, referenceSchema } from './cases.controller';
 
 const partner = {
   name: 'Anil Sharma',
@@ -47,11 +47,84 @@ describe('partnerSchema', () => {
   });
   it('requires a spouse name when married', () => {
     expect(messages(partnerSchema, { ...partner, maritalStatus: 'Married' })).toContain(
-      'Spouse name is required for a married partner.',
+      'Spouse name is required when married.',
     );
   });
   it('rejects an invalid PAN', () => {
     expect(messages(partnerSchema, { ...partner, pan: 'BAD' })).toContain('Enter a valid PAN.');
+  });
+});
+
+describe('management structure by type of constitution', () => {
+  const base = {
+    categoryKey: 'vendor_others_domestic',
+    legalName: 'Acme Traders',
+    businessAddress: '1 Main Road',
+    addressCountry: 'India',
+    addressState: 'Delhi',
+    addressCity: 'Delhi',
+    addressPostalCode: '110001',
+    references: [
+      {
+        contactName: 'A',
+        businessName: 'B',
+        registeredAddress: 'C',
+        contactNumber: '9819349395',
+        email: 'a@b.com',
+      },
+      {
+        contactName: 'D',
+        businessName: 'E',
+        registeredAddress: 'F',
+        contactNumber: '9819349396',
+        email: 'd@e.com',
+      },
+    ],
+    isecItHardware: false,
+    isecItSoftware: false,
+    isecAccessSystem: false,
+    isecAccessNetwork: false,
+    isecAccessApps: false,
+    isecAccessPii: false,
+  };
+  const { mobile: _mobile, ...person } = partner;
+  const paths = (v: unknown) => {
+    const r = createSchema.safeParse(v);
+    return r.success ? [] : r.error.issues.map((i) => i.path.join('.'));
+  };
+
+  it('requires the type of constitution', () => {
+    expect(paths({ ...base, partners: [] })).toContain('constitution');
+  });
+  it('asks the proprietor for a residence phone, not a mobile', () => {
+    const proprietor = { ...base, constitution: 'sole_proprietorship' };
+    expect(paths({ ...proprietor, partners: [person] })).toEqual(['partners.0.residencePhone']);
+    expect(
+      paths({ ...proprietor, partners: [{ ...person, residencePhone: '01342255667' }] }),
+    ).toEqual([]);
+  });
+  it('needs the partners of a firm, with their mobile numbers', () => {
+    const firm = { ...base, constitution: 'partnership' };
+    expect(paths({ ...firm, partners: [] })).toEqual(['partners']);
+    expect(paths({ ...firm, partners: [person] })).toEqual(['partners.0.mobile']);
+    expect(paths({ ...firm, partners: [partner, partner] })).toEqual([]);
+  });
+  it("asks each director for the director's contact and address too", () => {
+    const company = { ...base, constitution: 'private_limited' };
+    expect(paths({ ...company, partners: [partner] })).toEqual([
+      'partners.0.residencePhone',
+      'partners.0.contact',
+      'partners.0.officeAddress',
+    ]);
+  });
+  it('takes exactly one Karta for an HUF', () => {
+    const karta = { ...person, residencePhone: '01342255667' };
+    const huf = { ...base, constitution: 'huf' };
+    expect(paths({ ...huf, partners: [karta] })).toEqual([]);
+    expect(paths({ ...huf, partners: [karta, karta] })).toEqual(['partners']);
+  });
+  it('asks for no people for other constitutions', () => {
+    expect(paths({ ...base, constitution: 'trust_society', partners: [] })).toEqual([]);
   });
 });
 

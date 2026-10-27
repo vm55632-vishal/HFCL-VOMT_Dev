@@ -20,6 +20,8 @@ export interface VendorDetailsData {
   addressState?: string | null;
   addressCity?: string | null;
   addressPostalCode?: string | null;
+  /** Type of constitution (sole_proprietorship, partnership, private_limited, huf, ...). */
+  constitution?: string | null;
   // tax / bank
   pan?: string | null;
   gstin?: string | null;
@@ -60,8 +62,13 @@ export interface VendorDetailsData {
     spouseName?: string | null;
     pan?: string;
     address?: string;
-    mobile?: string;
+    mobile?: string | null;
+    residencePhone?: string | null;
+    contact?: string | null;
+    officeAddress?: string | null;
     pincode?: string;
+    /** proprietor | partner | director | karta */
+    role?: string;
   }[];
   // authorised signatory + SPOC
   signatoryName?: string | null;
