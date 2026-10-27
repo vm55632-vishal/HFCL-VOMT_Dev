@@ -1180,6 +1180,7 @@ function NewCaseInner() {
   const [step, setStep] = useState(0);
   // Digi KYC (last step) runs on the saved case: the draft, or the case being amended.
   const kycCaseId = editId || draftId;
+  const [digiStatus, setDigiStatus] = useState<string | null>(null);
   useEffect(() => {
     if (step === 4 && !kycCaseId && kind !== 'resubmit') void flushDraft();
   }, [step, kycCaseId, kind, flushDraft]);
@@ -1275,6 +1276,11 @@ function NewCaseInner() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    // A new case is submitted only from the Digi KYC step, once the vendor has completed it.
+    if (kind !== 'resubmit' && (step !== 4 || digiStatus !== 'passed')) {
+      if (step === 4) setError('Complete Digi KYC before submitting the case.');
+      return;
+    }
     if (panErr || gstErr || ifscErr || sigPanErr || sigMobileErr || sigEmailErr) {
       setError('Fix the highlighted PAN / GST / IFSC / signatory fields before submitting.');
       return;
@@ -2602,12 +2608,13 @@ function NewCaseInner() {
             <>
               <div className="dk-step-head">
                 <h2>Digi KYC</h2>
-                <p className="muted">You can raise the case while the vendor completes it.</p>
+                <p className="muted">Submit the case once the vendor has completed Digi KYC.</p>
               </div>
               {kycCaseId ? (
                 <KycPanel
                   caseId={kycCaseId}
                   embedded
+                  onDigiStatus={setDigiStatus}
                   beforeInitiate={
                     kind === 'resubmit'
                       ? undefined
@@ -2624,9 +2631,12 @@ function NewCaseInner() {
                 <button className="btn btn--ghost" type="button" onClick={() => goTo(3)}>
                   Back
                 </button>
-                <button className="btn" type="submit" disabled={busy}>
-                  {busy ? 'Submitting…' : kind === 'resubmit' ? 'Resubmit case' : 'Raise case'}
-                </button>
+                {/* A new case is submitted once the vendor has completed Digi KYC. */}
+                {(digiStatus === 'passed' || kind === 'resubmit') && (
+                  <button className="btn" type="submit" disabled={busy}>
+                    {busy ? 'Submitting…' : kind === 'resubmit' ? 'Resubmit case' : 'Submit'}
+                  </button>
+                )}
                 {draftControls}
               </div>
             </>

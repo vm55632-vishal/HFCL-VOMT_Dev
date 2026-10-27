@@ -406,12 +406,17 @@ export class CasesController {
 
   @Post()
   @RequirePermissions(PERMISSIONS.VendorCreate)
-  @ApiOperation({ summary: 'Raise a vendor onboarding case (proposer)' })
+  @ApiOperation({
+    summary:
+      'Raise a vendor onboarding case directly. Refused: a case is submitted from its draft once Digi KYC is completed.',
+  })
   create(
-    @CurrentUser() actor: AuthUser,
-    @Body(new ZodValidationPipe(createSchema)) body: CaseCreateInput,
+    @CurrentUser() _actor: AuthUser,
+    @Body(new ZodValidationPipe(createSchema)) _body: CaseCreateInput,
   ) {
-    return this.cases.create(actor, body);
+    // Digi KYC runs on the saved draft and must be completed before the case is submitted
+    // (PATCH /cases/:id), so a case can no longer be raised without one.
+    throw new BadRequestException('Complete Digi KYC before submitting the case.');
   }
 
   @Post('bulk')

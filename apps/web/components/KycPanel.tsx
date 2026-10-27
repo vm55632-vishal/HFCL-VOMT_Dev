@@ -87,7 +87,7 @@ function digiState(d: KycSummary): { icon: string; tone: Tone; title: string; li
         icon: 'alert',
         tone: 'warn',
         title: 'Not completed',
-        line: 'Send the request again.',
+        line: 'Initiate Digi KYC again.',
       };
     default:
       return {
@@ -113,11 +113,14 @@ export default function KycPanel({
   caseId,
   embedded = false,
   beforeInitiate,
+  onDigiStatus,
 }: {
   caseId: string;
   embedded?: boolean;
   /** Runs before the confirmation opens, e.g. to save the draft so the signatory is current. */
   beforeInitiate?: () => Promise<void>;
+  /** Told the Digi KYC status whenever it changes (e.g. to allow submitting once completed). */
+  onDigiStatus?: (status: KycStatus) => void;
 }) {
   const [data, setData] = useState<KycSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -137,6 +140,11 @@ export default function KycPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  const digiStatus = data?.digi.status;
+  useEffect(() => {
+    if (digiStatus) onDigiStatus?.(digiStatus);
+  }, [digiStatus, onDigiStatus]);
 
   // While anything runs, refresh every few seconds; the server moves the run forward on read.
   const running = data?.digi.status === 'in_progress' || data?.risk?.overall === 'in_progress';
@@ -272,12 +280,8 @@ export default function KycPanel({
               disabled={preparing}
               onClick={() => void confirm()}
             >
-              <Icon name="mail" size={16} />
-              {preparing
-                ? 'Saving…'
-                : digi.status === 'incomplete'
-                  ? 'Resend request'
-                  : 'Send Digi KYC request'}
+              <Icon name="shield" size={16} />
+              {preparing ? 'Saving…' : 'Initiate Digi KYC'}
             </button>
           )}
         </div>
@@ -408,7 +412,7 @@ function ConfirmDialog({
           <span className="dlg__icon" aria-hidden="true">
             <Icon name="mail" size={24} />
           </span>
-          <h2 id="kyc-title">Send Digi KYC request?</h2>
+          <h2 id="kyc-title">Initiate Digi KYC?</h2>
           <div className="dk-person dk-person--compact">
             <span className="dk-avatar" aria-hidden="true">
               {initials(data.signatory.name) || '?'}
@@ -436,7 +440,7 @@ function ConfirmDialog({
             onClick={() => void start()}
             disabled={busy}
           >
-            {busy ? 'Sending…' : 'Send request'}
+            {busy ? 'Starting…' : 'Initiate Digi KYC'}
           </button>
         </div>
       </div>

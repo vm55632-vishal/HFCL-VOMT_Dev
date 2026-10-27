@@ -2,7 +2,7 @@ import type { KycCheckKey } from '@vop/shared';
 import type { KycCheckResult, KycProvider, KycSubject } from './contracts';
 
 /** How long each simulated check takes. A live provider is minutes to an hour; the mock is seconds. */
-const MOCK_CHECK_MS = 8_000;
+const MOCK_CHECK_MS = 5_000;
 
 /**
  * Words in the authorised signatory's name that make a mock check fail, so the failure path can be

@@ -925,6 +925,14 @@ export class CasesService {
     return flags;
   }
 
+  /** A new case is submitted only once the vendor has completed Digi KYC. */
+  private async assertDigiKycDone(caseId: string) {
+    const done = await this.prisma.caseKycCheck.count({
+      where: { caseId, checkKey: 'digi_kyc', status: 'passed' },
+    });
+    if (!done) throw new BadRequestException('Complete Digi KYC before submitting the case.');
+  }
+
   /** The Karta's photograph must be on the case before an HUF case is submitted. */
   private async assertPersonPhoto(caseId: string, constitution?: string) {
     const role = managementRole(constitution);
@@ -1906,6 +1914,7 @@ export class CasesService {
     // Decide which stages to (re)open. A fresh draft opens the whole active set; otherwise only the
     // stages that were sent back, plus any newly-active stage with no row yet (e.g. InfoSec toggled on).
     const isDraft = c.stage === 'draft';
+    if (isDraft) await this.assertDigiKycDone(id);
     const reopen: ReviewStage[] = [];
     // An approval level that sent the case back; on resubmit the case returns straight to it.
     let returnToLevel: ApprovalLevel | undefined;

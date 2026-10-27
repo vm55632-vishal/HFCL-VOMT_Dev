@@ -360,7 +360,8 @@ export class KycService {
     }
 
     const sent = await this.sendDigiKycEmail(c, to, link);
-    if (!sent) {
+    // The mock provider completes on its own, so a dev machine without a mail server can still test.
+    if (!sent && this.provider.name !== 'mock') {
       // Nobody can complete a request that never arrived: leave it incomplete so it can be resent.
       await this.prisma.caseKycCheck.updateMany({
         where: { caseId: id, checkKey: 'digi_kyc' },
