@@ -215,6 +215,22 @@ const INDIAN_STATES = [
   'Uttarakhand',
   'West Bengal',
 ];
+/** The registry's gender ("M", "male", "F"…) as a form option, or '' when unknown. */
+function panGender(g?: string): string {
+  const v = (g ?? '').trim().toLowerCase();
+  if (v === 'm' || v === 'male') return 'Male';
+  if (v === 'f' || v === 'female') return 'Female';
+  if (v === 't' || v === 'o' || v === 'other' || v === 'transgender') return 'Other';
+  return '';
+}
+/** The registry's date of birth (YYYY-MM-DD, DD/MM/YYYY or DD-MM-YYYY) as YYYY-MM-DD, or ''. */
+function panDob(d?: string): string {
+  const v = (d ?? '').trim();
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(v);
+  const dmy = /^(\d{2})[/-](\d{2})[/-](\d{4})$/.exec(v);
+  const out = iso ? `${iso[1]}-${iso[2]}-${iso[3]}` : dmy ? `${dmy[3]}-${dmy[2]}-${dmy[1]}` : '';
+  return out && !Number.isNaN(Date.parse(out)) && new Date(out) < new Date() ? out : '';
+}
 const isIndia = (country: string) => !country.trim() || /^india$/i.test(country.trim());
 
 const initial = {
@@ -1037,6 +1053,31 @@ function NewCaseInner() {
       return { ...prev, constitution: value, partners };
     });
   }
+  // A sole proprietor is the PAN holder: fill the proprietor's name, gender, date of birth (when
+  // the registry returns it) and PAN from the verified PAN. Only empty fields are filled, so
+  // anything the proposer typed or a restored draft holds is kept.
+  const panFields = panChk.result?.verified ? panChk.result.fields : undefined;
+  const panName = panFields?.name ?? panChk.result?.name;
+  useEffect(() => {
+    if (mgmtRole !== 'proprietor' || !panChk.result?.verified) return;
+    const pan = f.pan.includes('•') ? '' : f.pan.trim().toUpperCase();
+    const fromPan: Partial<PartnerRow> = {
+      name: panName ?? '',
+      gender: panGender(panFields?.gender),
+      dob: panDob(panFields?.dob),
+      pan,
+    };
+    setF((prev) => {
+      const row = prev.partners[0] ?? { ...EMPTY_PERSON };
+      const patch: Partial<PartnerRow> = {};
+      for (const [k, v] of Object.entries(fromPan) as [keyof PartnerRow, string][]) {
+        if (v && !row[k].trim()) patch[k] = v;
+      }
+      if (Object.keys(patch).length === 0) return prev;
+      return { ...prev, partners: [{ ...row, ...patch }, ...prev.partners.slice(1)] };
+    });
+  }, [mgmtRole, panChk.result, panName, panFields?.gender, panFields?.dob, f.pan]);
+
   // The photograph (Karta of an HUF) is uploaded to the draft and malware-scanned by the API.
   const [photo, setPhoto] = useState<{ name?: string; busy: boolean; error?: string }>({
     busy: false,
