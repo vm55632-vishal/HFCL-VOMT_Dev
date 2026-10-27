@@ -5062,3 +5062,19 @@ div.kyc__row {
   background: var(--danger);
   border-color: var(--danger);
 }
+/* Case Files: Download / Remove beside the "Files" title, greyed out until files are selected. */
+.cf-titlebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+}
+.cf-actionsbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.cf-actionsbar .cf-bulk__text {
+  flex: none;
+}

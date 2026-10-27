@@ -182,9 +182,47 @@ export default function CaseFiles({
 
       <section className="cf-card">
         <div className="cf-head">
-          <h2>
-            Files <span className="cf-count">{files.length}</span>
-          </h2>
+          <div className="cf-titlebar">
+            <h2>
+              Files <span className="cf-count">{files.length}</span>
+            </h2>
+            {files.length > 0 && (
+              <div className="cf-actionsbar" role="group" aria-label="Selected files">
+                <button
+                  type="button"
+                  className="btn btn--sm btn--ghost cf-bulk__btn"
+                  onClick={() => void downloadSelected()}
+                  disabled={downloadable.length === 0 || confirmRemove}
+                  title={picked.length ? undefined : 'Select one or more files first'}
+                >
+                  <Icon name="download" size={16} /> Download
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--sm btn--ghost cf-bulk__btn cf-bulk__remove"
+                  onClick={() => setConfirmRemove(true)}
+                  disabled={!removable || confirmRemove}
+                  title={
+                    !picked.length
+                      ? 'Select one or more files first'
+                      : removable
+                        ? undefined
+                        : 'You can only remove files you uploaded, while the case is open.'
+                  }
+                >
+                  <Icon name="close" size={16} /> Remove
+                </button>
+                {picked.length > 0 && (
+                  <span className="cf-bulk__text">
+                    <strong>{picked.length}</strong> selected
+                    <button type="button" className="cf-link" onClick={clear}>
+                      Clear
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           {files.length > 0 && (
             <div className="cf-tools">
               <label className="cf-search">
@@ -222,67 +260,28 @@ export default function CaseFiles({
           </div>
         )}
 
-        {picked.length > 0 && (
-          <div
-            className={`cf-bulk${confirmRemove ? ' is-danger' : ''}`}
-            role="region"
-            aria-label="Selected files"
-          >
-            {confirmRemove ? (
-              <>
-                <span className="cf-bulk__text">
-                  <Icon name="alert" size={16} />
-                  Remove {picked.length} file{picked.length === 1 ? '' : 's'}? This cannot be
-                  undone.
-                </span>
-                <button
-                  type="button"
-                  className="btn btn--sm btn--ghost"
-                  onClick={() => setConfirmRemove(false)}
-                  disabled={busy}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--sm cf-btn-danger"
-                  onClick={() => void removeSelected()}
-                  disabled={busy}
-                >
-                  {busy ? 'Removing…' : 'Remove'}
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="cf-bulk__text">
-                  <strong>{picked.length}</strong> selected
-                  <button type="button" className="cf-link" onClick={clear}>
-                    Clear
-                  </button>
-                </span>
-                <button
-                  type="button"
-                  className="btn btn--sm btn--ghost cf-bulk__btn"
-                  onClick={() => void downloadSelected()}
-                  disabled={downloadable.length === 0}
-                >
-                  <Icon name="download" size={16} /> Download
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--sm btn--ghost cf-bulk__btn cf-bulk__remove"
-                  onClick={() => setConfirmRemove(true)}
-                  disabled={!removable}
-                  title={
-                    removable
-                      ? undefined
-                      : 'You can only remove files you uploaded, while the case is open.'
-                  }
-                >
-                  <Icon name="close" size={16} /> Remove
-                </button>
-              </>
-            )}
+        {confirmRemove && picked.length > 0 && (
+          <div className="cf-bulk is-danger" role="region" aria-label="Confirm removal">
+            <span className="cf-bulk__text">
+              <Icon name="alert" size={16} />
+              Remove {picked.length} file{picked.length === 1 ? '' : 's'}? This cannot be undone.
+            </span>
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost"
+              onClick={() => setConfirmRemove(false)}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn--sm cf-btn-danger"
+              onClick={() => void removeSelected()}
+              disabled={busy}
+            >
+              {busy ? 'Removing…' : 'Remove'}
+            </button>
           </div>
         )}
         {note && (
