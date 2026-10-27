@@ -349,7 +349,7 @@ export default function CaseDetail() {
         aside={
           <div className="req__actions">
             <Link className="btn btn--sm btn--ghost" href={`/cases/${c.id}/kyc`}>
-              Digi KYC &amp; risk checks
+              {roles.includes('fcu') ? 'Digi KYC & risk checks' : 'Digi KYC'}
             </Link>
             <button
               type="button"
@@ -924,7 +924,7 @@ export default function CaseDetail() {
             <h2>Vendor details</h2>
             <div className="req__actions">
               <Link className="btn btn--sm btn--ghost" href={`/cases/${c.id}/kyc`}>
-                Digi KYC &amp; risk checks
+                {roles.includes('fcu') ? 'Digi KYC & risk checks' : 'Digi KYC'}
               </Link>
               <button
                 type="button"

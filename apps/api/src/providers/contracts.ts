@@ -99,15 +99,19 @@ export interface KycSubject {
   mobile?: string;
   email?: string;
 }
-export type KycRunStatus = 'in_progress' | 'passed' | 'failed';
+/** incomplete: the subject did not finish (e.g. the Digi KYC link expired); summary says why. */
+export type KycRunStatus = 'in_progress' | 'passed' | 'failed' | 'incomplete';
 export interface KycCheckResult {
   status: KycRunStatus;
   summary?: string;
 }
 export interface KycProvider {
   readonly name: string;
-  /** Start one check for the subject; returns the provider's reference for polling. */
-  start(check: KycCheckKey, subject: KycSubject): Promise<{ ref: string }>;
+  /**
+   * Start one check for the subject; returns the provider's reference for polling and, for a check
+   * the subject completes themselves (Digi KYC), the link the provider issued for them, if any.
+   */
+  start(check: KycCheckKey, subject: KycSubject): Promise<{ ref: string; link?: string }>;
   /** Current state of a started check. */
   poll(check: KycCheckKey, ref: string): Promise<KycCheckResult>;
 }

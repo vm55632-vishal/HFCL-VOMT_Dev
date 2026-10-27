@@ -26,6 +26,15 @@ describe('MockKycProvider', () => {
     expect((await provider.poll('digi_kyc', digi.ref)).status).toBe('passed');
   });
 
+  it('leaves Digi KYC incomplete, with the reason, when the vendor never finishes it', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-10-24T10:00:00Z'));
+    const { ref } = await provider.start('digi_kyc', { ...subject, name: 'Noshow Kumar' });
+    jest.setSystemTime(new Date('2026-10-24T10:00:10Z'));
+    const done = await provider.poll('digi_kyc', ref);
+    expect(done.status).toBe('incomplete');
+    expect(done.summary).toMatch(/did not complete/);
+  });
+
   it('treats a malformed reference as still running rather than crashing', async () => {
     expect((await provider.poll('ixsite', 'garbage')).status).toBe('in_progress');
   });

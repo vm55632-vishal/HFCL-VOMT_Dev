@@ -3421,6 +3421,22 @@ code {
   color: var(--danger);
   background: var(--danger-bg);
 }
+.kyc-pill--incomplete {
+  color: var(--warn);
+  background: var(--warn-bg);
+}
+.kyc__reason {
+  margin: 0 0 0 64px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--elevated);
+  font-size: 13px;
+}
+@media (max-width: 760px) {
+  .kyc__reason {
+    margin-left: 0;
+  }
+}
 .kyc__important {
   display: flex;
   gap: 12px;
@@ -3986,4 +4002,7 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+div.kyc__row {
+  cursor: default;
 }

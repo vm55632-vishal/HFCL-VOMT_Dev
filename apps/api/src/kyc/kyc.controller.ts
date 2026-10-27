@@ -12,7 +12,8 @@ export class KycController {
 
   @Get()
   @ApiOperation({
-    summary: 'KYC & risk checks on the authorised signatory (advances a running check)',
+    summary:
+      'Digi KYC on the authorised signatory, plus the risk checks for FCU (advances a running check)',
   })
   summary(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
     return this.kyc.summary(actor, id);
@@ -20,8 +21,17 @@ export class KycController {
 
   @Post('initiate')
   @RequirePermissions(PERMISSIONS.KycInitiate)
-  @ApiOperation({ summary: 'Initiate Digi KYC and the follow-on risk checks' })
+  @ApiOperation({
+    summary: 'Start Digi KYC and email the vendor to complete it (again, if it was incomplete)',
+  })
   initiate(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
-    return this.kyc.initiate(actor, id);
+    return this.kyc.initiateDigi(actor, id);
+  }
+
+  @Post('risk/initiate')
+  @RequirePermissions(PERMISSIONS.KycInitiate)
+  @ApiOperation({ summary: 'Start the Hunter, IXSite and CRIF / CIBIL checks (FCU only)' })
+  initiateRisk(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.kyc.initiateRisk(actor, id);
   }
 }

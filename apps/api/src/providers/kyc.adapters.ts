@@ -7,8 +7,12 @@ const MOCK_CHECK_MS = 8_000;
 /**
  * Words in the authorised signatory's name that make a mock check fail, so the failure path can be
  * exercised end to end. Everything else passes. For example, a signatory named "Test Fraud Kumar"
- * fails the Hunter check.
+ * fails the Hunter check. "noshow" leaves Digi KYC incomplete (the vendor never finished it).
  */
+const MOCK_INCOMPLETE_MARKER = 'noshow';
+const MOCK_INCOMPLETE_SUMMARY =
+  'The vendor did not complete Digi KYC before the link expired (mock result).';
+
 const MOCK_FAIL_MARKER: Record<KycCheckKey, string> = {
   digi_kyc: 'fakeid',
   hunter: 'fraud',
@@ -38,8 +42,15 @@ export class MockKycProvider implements KycProvider {
   readonly name = 'mock';
 
   start(check: KycCheckKey, subject: KycSubject): Promise<{ ref: string }> {
-    const fail = subject.name.toLowerCase().includes(MOCK_FAIL_MARKER[check]);
-    return Promise.resolve({ ref: `mock:${check}:${Date.now()}:${fail ? 'fail' : 'pass'}` });
+    const name = subject.name.toLowerCase();
+    const outcome =
+      check === 'digi_kyc' && name.includes(MOCK_INCOMPLETE_MARKER)
+        ? 'incomplete'
+        : name.includes(MOCK_FAIL_MARKER[check])
+          ? 'fail'
+          : 'pass';
+    // No link: the mock has no vendor-facing journey.
+    return Promise.resolve({ ref: `mock:${check}:${Date.now()}:${outcome}` });
   }
 
   poll(check: KycCheckKey, ref: string): Promise<KycCheckResult> {
@@ -47,6 +58,9 @@ export class MockKycProvider implements KycProvider {
     const elapsed = Date.now() - Number(startedAt);
     if (!Number.isFinite(elapsed) || elapsed < MOCK_CHECK_MS) {
       return Promise.resolve({ status: 'in_progress' });
+    }
+    if (outcome === 'incomplete') {
+      return Promise.resolve({ status: 'incomplete', summary: MOCK_INCOMPLETE_SUMMARY });
     }
     return Promise.resolve(
       outcome === 'fail'

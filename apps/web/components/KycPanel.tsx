@@ -6,7 +6,7 @@ import { Icon } from './icons';
 import { initials } from './DetailParts';
 import { useModalBehavior } from './useModalBehavior';
 
-type KycStatus = 'not_initiated' | 'pending' | 'in_progress' | 'passed' | 'failed';
+type KycStatus = 'not_initiated' | 'pending' | 'in_progress' | 'passed' | 'failed' | 'incomplete';
 
 interface KycCheck {
   key: string;
@@ -22,18 +22,33 @@ interface KycCheck {
 interface KycSummary {
   case: { id: string; ref: string; legalName: string; stage: string };
   signatory: { name: string; mobile: string; email: string; pan: string };
-  overall: 'not_initiated' | 'in_progress' | 'passed' | 'failed';
   ready: boolean;
-  canInitiate: boolean;
-  checks: KycCheck[];
+  /** Digi KYC: the vendor completes it from the emailed request. */
+  digi: KycCheck & { canInitiate: boolean };
+  /** Hunter, IXSite and CRIF / CIBIL: only sent to the FCU team. */
+  risk?: {
+    overall: 'not_initiated' | 'in_progress' | 'passed' | 'failed';
+    canInitiate: boolean;
+    checks: KycCheck[];
+  };
 }
 
-const STATUS_LABEL: Record<KycStatus, string> = {
+// Digi KYC is done by the vendor, so its outcomes read as completed / rejected / incomplete.
+const DIGI_LABEL: Record<KycStatus, string> = {
+  not_initiated: 'Not Initiated',
+  pending: 'Pending',
+  in_progress: 'Awaiting vendor',
+  passed: 'Completed',
+  failed: 'Rejected',
+  incomplete: 'Incomplete',
+};
+const RISK_LABEL: Record<KycStatus, string> = {
   not_initiated: 'Not Initiated',
   pending: 'Pending',
   in_progress: 'In Progress',
   passed: 'Passed',
   failed: 'Failed',
+  incomplete: 'Incomplete',
 };
 const CHECK_ICON: Record<string, string> = {
   digi_kyc: 'user',
@@ -61,10 +76,44 @@ const when = (iso: string | null) =>
 
 const prettyStage = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
 
+/** One check as a row: name, status, when it started and last changed, and its result. */
+function CheckRow({ k, labels }: { k: KycCheck; labels: Record<KycStatus, string> }) {
+  return (
+    <li className="kyc__check">
+      <div className="kyc__row">
+        <span className={`kyc__ico kyc__ico--${CHECK_TONE[k.key] ?? 'blue'}`} aria-hidden="true">
+          <Icon name={CHECK_ICON[k.key] ?? 'shield'} size={20} />
+        </span>
+        <span className="kyc__name">
+          <strong>{k.label}</strong>
+          <small>{k.description}</small>
+        </span>
+        <span className={`kyc-pill kyc-pill--${k.status}`}>{labels[k.status]}</span>
+        <span className="kyc__when">
+          <small>Initiated On</small>
+          {when(k.initiatedAt)}
+        </span>
+        <span className="kyc__when">
+          <small>Last Updated</small>
+          {when(k.updatedAt)}
+        </span>
+        <span />
+      </div>
+      {k.summary && (
+        <p className="kyc__reason">
+          <strong>{k.status === 'passed' ? 'Result' : 'Reason'}:</strong> {k.summary}
+        </p>
+      )}
+    </li>
+  );
+}
+
 /**
- * Digi KYC & risk checks on a case's authorised signatory: the signatory, the "Initiate Digi KYC"
- * action and the checklist. Used on the case's KYC page and as the last step of the intake form
- * (`embedded`, where the case is still a draft and the page has its own heading).
+ * Digi KYC on a case's authorised signatory: initiating it emails the vendor to complete it, and its
+ * outcome (completed, rejected or incomplete with the reason) shows here. The FCU team also sees
+ * and runs the risk checks (Hunter, IXSite, CRIF / CIBIL); nobody else is shown them. Used on the
+ * case's KYC page and as the last step of the intake form (`embedded`: the case is still a draft
+ * and the page has its own heading).
  */
 export default function KycPanel({
   caseId,
@@ -79,7 +128,7 @@ export default function KycPanel({
   const [data, setData] = useState<KycSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [open, setOpen] = useState<string | null>(null);
+  const [riskBusy, setRiskBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -94,8 +143,8 @@ export default function KycPanel({
     void load();
   }, [load]);
 
-  // While a run is in progress, refresh every few seconds; the server moves the run forward on read.
-  const running = data?.overall === 'in_progress';
+  // While anything runs, refresh every few seconds; the server moves the run forward on read.
+  const running = data?.digi.status === 'in_progress' || data?.risk?.overall === 'in_progress';
   useEffect(() => {
     if (!running) return;
     const t = setInterval(() => void load(), 3000);
@@ -110,35 +159,46 @@ export default function KycPanel({
     setConfirming(true);
   }
 
+  async function startRisk() {
+    if (!window.confirm('Run the Hunter, IXSite and CRIF / CIBIL checks on the signatory?')) return;
+    setRiskBusy(true);
+    try {
+      setData(await apiFetch<KycSummary>(`/cases/${caseId}/kyc/risk/initiate`, { method: 'POST' }));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start the risk checks.');
+    } finally {
+      setRiskBusy(false);
+    }
+  }
+
   if (!data) {
     return error ? (
       <p className="error" role="alert">
         {error}
       </p>
     ) : (
-      <p className="muted">Loading KYC checks…</p>
+      <p className="muted">Loading Digi KYC…</p>
     );
   }
 
-  const { signatory, case: c } = data;
-  const verification: { label: string; tone: string } =
-    data.overall === 'passed'
-      ? { label: 'Verified', tone: 'passed' }
-      : data.overall === 'failed'
-        ? { label: 'Review required', tone: 'failed' }
-        : data.overall === 'in_progress'
-          ? { label: 'In Progress', tone: 'in_progress' }
-          : { label: 'Not Initiated', tone: 'not_initiated' };
-
+  const { signatory, case: c, digi, risk } = data;
+  const resend = digi.status === 'incomplete';
   const hint = !data.ready
     ? "The authorised signatory's name and PAN are missing on this case."
-    : data.overall === 'in_progress'
-      ? 'Verification is in progress. You cannot start it again until it finishes.'
-      : data.overall !== 'not_initiated'
-        ? 'The checks have finished for this case.'
-        : data.canInitiate
-          ? 'This will trigger Digi KYC and the configured verification workflow for the authorised signatory.'
-          : 'You do not have permission to start these checks.';
+    : !signatory.email
+      ? "Enter the authorised signatory's email: the Digi KYC request is sent there."
+      : digi.status === 'in_progress'
+        ? `The request was emailed to ${signatory.email}. Waiting for the vendor to complete Digi KYC.`
+        : digi.status === 'passed'
+          ? 'The vendor has completed Digi KYC.'
+          : digi.status === 'failed'
+            ? 'Digi KYC was rejected. The case is marked for review.'
+            : !digi.canInitiate
+              ? 'You do not have permission to start Digi KYC.'
+              : resend
+                ? `Digi KYC was not completed. Send the request to ${signatory.email} again.`
+                : `The vendor's authorised signatory will be emailed at ${signatory.email} to complete Digi KYC.`;
 
   return (
     <div className="kyc">
@@ -149,10 +209,8 @@ export default function KycPanel({
               <Icon name="shield" size={26} />
             </span>
             <div>
-              <h1>Digi KYC &amp; Risk Checks</h1>
-              <p className="lead">
-                Verification of the authorised signatory against multiple data sources
-              </p>
+              <h1>{risk ? 'Digi KYC & Risk Checks' : 'Digi KYC'}</h1>
+              <p className="lead">Verification of the vendor&apos;s authorised signatory</p>
             </div>
           </div>
           <dl className="kyc__case">
@@ -180,141 +238,128 @@ export default function KycPanel({
         </p>
       )}
 
-      <div>
-        <div className="kyc__main">
-          <section className="card kyc__card">
-            <h2 className="kyc__h2">
-              <Icon name="user" size={18} /> Authorised Signatory Details
-            </h2>
-            <div className="kyc__person">
-              <span className="kyc__avatar" aria-hidden="true">
-                {initials(signatory.name) || '?'}
-              </span>
-              <div className="kyc__who">
-                <strong>{signatory.name || 'Not provided'}</strong>
-                <span className="muted">Authorised Signatory</span>
-              </div>
-              <dl className="kyc__facts">
-                <div>
-                  <dt>Email</dt>
-                  <dd>{signatory.email || '—'}</dd>
-                </div>
-                <div>
-                  <dt>Mobile</dt>
-                  <dd>{signatory.mobile ? `+91 ${signatory.mobile}` : '—'}</dd>
-                </div>
-                <div>
-                  <dt>PAN</dt>
-                  <dd>{signatory.pan || '—'}</dd>
-                </div>
-                <div>
-                  <dt>Vendor Name</dt>
-                  <dd>{c.legalName || '—'}</dd>
-                </div>
-              </dl>
-              <div className="kyc__verif">
-                <small>Verification Status</small>
-                <span className={`kyc-pill kyc-pill--${verification.tone}`}>
-                  {verification.label}
-                </span>
-              </div>
+      <div className="kyc__main">
+        <section className="card kyc__card">
+          <h2 className="kyc__h2">
+            <Icon name="user" size={18} /> Authorised Signatory Details
+          </h2>
+          <div className="kyc__person">
+            <span className="kyc__avatar" aria-hidden="true">
+              {initials(signatory.name) || '?'}
+            </span>
+            <div className="kyc__who">
+              <strong>{signatory.name || 'Not provided'}</strong>
+              <span className="muted">Authorised Signatory</span>
             </div>
-          </section>
-
-          <div className="kyc__info" role="note">
-            <Icon name="alert" size={18} />
-            <div>
-              <strong>Before you begin</strong>
-              <p>
-                Please verify that the authorised signatory details are correct before initiating
-                Digi KYC and the associated checks.
-              </p>
-              <small>
-                All checks below relate to the authorised signatory, not the vendor entity itself.
-              </small>
+            <dl className="kyc__facts">
+              <div>
+                <dt>Email</dt>
+                <dd>{signatory.email || '—'}</dd>
+              </div>
+              <div>
+                <dt>Mobile</dt>
+                <dd>{signatory.mobile ? `+91 ${signatory.mobile}` : '—'}</dd>
+              </div>
+              <div>
+                <dt>PAN</dt>
+                <dd>{signatory.pan || '—'}</dd>
+              </div>
+              <div>
+                <dt>Vendor Name</dt>
+                <dd>{c.legalName || '—'}</dd>
+              </div>
+            </dl>
+            <div className="kyc__verif">
+              <small>Digi KYC Status</small>
+              <span className={`kyc-pill kyc-pill--${digi.status}`}>{DIGI_LABEL[digi.status]}</span>
             </div>
           </div>
+        </section>
 
-          <div className="kyc__action">
-            <button
-              type="button"
-              className="btn kyc__go"
-              disabled={!data.canInitiate}
-              onClick={() => void confirm()}
-            >
-              {data.overall === 'in_progress' ? 'Verification in progress…' : 'Initiate Digi KYC'}
-              <Icon name="chevron" size={16} />
-            </button>
-            <p className="muted tiny">{hint}</p>
+        <div className="kyc__info" role="note">
+          <Icon name="alert" size={18} />
+          <div>
+            <strong>Before you begin</strong>
+            <p>
+              Check that the authorised signatory&apos;s details, especially the email, are correct.
+              Initiating Digi KYC emails the signatory a request to complete it.
+            </p>
           </div>
+        </div>
 
+        <div className="kyc__action">
+          <button
+            type="button"
+            className="btn kyc__go"
+            disabled={!digi.canInitiate}
+            onClick={() => void confirm()}
+          >
+            {digi.status === 'in_progress'
+              ? 'Waiting for the vendor…'
+              : resend
+                ? 'Send Digi KYC again'
+                : 'Initiate Digi KYC'}
+            <Icon name="chevron" size={16} />
+          </button>
+          <p className="muted tiny">{hint}</p>
+        </div>
+
+        <section className="card kyc__card">
+          <h2 className="kyc__h2">
+            <Icon name="list" size={18} /> Digi KYC Status
+          </h2>
+          <ul className="kyc__checks">
+            <CheckRow k={digi} labels={DIGI_LABEL} />
+          </ul>
+        </section>
+
+        {risk && (
           <section className="card kyc__card">
             <h2 className="kyc__h2">
-              <Icon name="list" size={18} /> Verification Checklist
+              <Icon name="shield" size={18} /> Risk Checks (FCU)
             </h2>
             <p className="muted">
-              Track the status of each check below. Each check is performed against the authorised
-              signatory person.
+              Hunter, IXSite and CRIF / CIBIL on the authorised signatory, run one after another.
+              Only the FCU team sees these checks.
             </p>
             <ul className="kyc__checks">
-              {data.checks.map((k) => {
-                const expandable = !!k.summary;
-                return (
-                  <li key={k.key} className="kyc__check">
-                    <button
-                      type="button"
-                      className="kyc__row"
-                      aria-expanded={open === k.key}
-                      disabled={!expandable}
-                      onClick={() => setOpen(open === k.key ? null : k.key)}
-                    >
-                      <span
-                        className={`kyc__ico kyc__ico--${CHECK_TONE[k.key] ?? 'blue'}`}
-                        aria-hidden="true"
-                      >
-                        <Icon name={CHECK_ICON[k.key] ?? 'shield'} size={20} />
-                      </span>
-                      <span className="kyc__name">
-                        <strong>{k.label}</strong>
-                        <small>{k.description}</small>
-                      </span>
-                      <span className={`kyc-pill kyc-pill--${k.status}`}>
-                        {STATUS_LABEL[k.status]}
-                      </span>
-                      <span className="kyc__when">
-                        <small>Initiated On</small>
-                        {when(k.initiatedAt)}
-                      </span>
-                      <span className="kyc__when">
-                        <small>Last Updated</small>
-                        {when(k.updatedAt)}
-                      </span>
-                      <span
-                        className={`kyc__chev${open === k.key ? ' is-open' : ''}`}
-                        aria-hidden="true"
-                      >
-                        {expandable && <Icon name="chevron" size={16} />}
-                      </span>
-                    </button>
-                    {open === k.key && k.summary && <p className="kyc__summary">{k.summary}</p>}
-                  </li>
-                );
-              })}
+              {risk.checks.map((k) => (
+                <CheckRow key={k.key} k={k} labels={RISK_LABEL} />
+              ))}
             </ul>
+            {risk.overall === 'not_initiated' && (
+              <div className="kyc__action">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!risk.canInitiate || riskBusy}
+                  onClick={() => void startRisk()}
+                >
+                  {riskBusy ? 'Starting…' : 'Run risk checks'}
+                </button>
+                {!risk.canInitiate && (
+                  <p className="muted tiny">
+                    {c.stage === 'draft'
+                      ? 'The risk checks run once the case is raised.'
+                      : 'You do not have permission to start these checks.'}
+                  </p>
+                )}
+              </div>
+            )}
           </section>
+        )}
 
-          <aside className="kyc__important" aria-label="Important">
-            <Icon name="shield" size={20} />
-            <div>
-              <strong>Important</strong>
-              <ul>
-                <li>The verification is triggered for the current authorised signatory only.</li>
-                <li>You cannot initiate Digi KYC again while a verification is in progress.</li>
-                <li>If any check fails, the case is marked for review as per policy.</li>
-              </ul>
-            </div>
-          </aside>
-        </div>
+        <aside className="kyc__important" aria-label="Important">
+          <Icon name="shield" size={20} />
+          <div>
+            <strong>Important</strong>
+            <ul>
+              <li>Digi KYC is done by the vendor&apos;s authorised signatory from the email.</li>
+              <li>If it is not completed, you can send the request again.</li>
+              <li>If Digi KYC is rejected, the case is marked for review as per policy.</li>
+            </ul>
+          </div>
+        </aside>
       </div>
 
       {confirming && (
@@ -330,6 +375,7 @@ export default function KycPanel({
     </div>
   );
 }
+
 /** "Confirm Digi KYC Initiation": the proposer ticks that the signatory details are correct first. */
 function ConfirmDialog({
   data,
@@ -354,7 +400,7 @@ function ConfirmDialog({
     try {
       onDone(await apiFetch<KycSummary>(`/cases/${data.case.id}/kyc/initiate`, { method: 'POST' }));
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Could not start the checks.');
+      setErr(e instanceof Error ? e.message : 'Could not start Digi KYC.');
       setBusy(false);
     }
   }
@@ -380,8 +426,8 @@ function ConfirmDialog({
           </span>
           <h2 id="kyc-title">Confirm Digi KYC Initiation</h2>
           <p className="dlg__text">
-            You are about to initiate Digi KYC and the following checks for the authorised
-            signatory:
+            A request to complete Digi KYC will be emailed to the authorised signatory at{' '}
+            <strong>{data.signatory.email}</strong>.
           </p>
           <div className="kyc__confirm">
             <span className="kyc__avatar" aria-hidden="true">
@@ -397,13 +443,6 @@ function ConfirmDialog({
               <small>Case ID: {data.case.ref}</small>
             </div>
           </div>
-          <ul className="kyc__ticks">
-            {data.checks.map((k) => (
-              <li key={k.key}>
-                <Icon name="check" size={14} /> <strong>{k.label}</strong> <span>({k.scope})</span>
-              </li>
-            ))}
-          </ul>
           <label className="checkbox kyc__agree">
             <input
               ref={boxRef}
@@ -413,8 +452,8 @@ function ConfirmDialog({
               onChange={(e) => setAgreed(e.target.checked)}
             />
             <span>
-              I confirm that the signatory details are correct and I agree to proceed with the
-              verification process.
+              I confirm that the signatory details are correct and I agree to send the Digi KYC
+              request.
             </span>
           </label>
           {err && (
@@ -434,7 +473,7 @@ function ConfirmDialog({
             onClick={() => void start()}
             disabled={!agreed || busy}
           >
-            {busy ? 'Starting…' : 'Initiate Digi KYC'}
+            {busy ? 'Sending…' : 'Send Digi KYC request'}
           </button>
         </div>
       </div>
