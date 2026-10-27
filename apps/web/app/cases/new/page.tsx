@@ -15,7 +15,9 @@ import {
   MANAGEMENT,
   managementRole,
   personPhotoDocType,
-  suggestConstitution,
+  constitutionFromGst,
+  constitutionFromPan,
+  isConstitution,
 } from '@vop/shared';
 import ManagementPeople, {
   EMPTY_PERSON,
@@ -999,13 +1001,30 @@ function NewCaseInner() {
   // --- Management structure: proprietor / partners / directors / Karta, by constitution ---
   const mgmtRole = managementRole(f.constitution);
   const photoDocType = mgmtRole && MANAGEMENT[mgmtRole].photo ? personPhotoDocType(mgmtRole) : null;
-  // Suggest the constitution from the GST registration or the PAN, until the proposer picks one.
+  // Type of constitution: taken from the GST registration when the vendor has one (not editable);
+  // otherwise the proposer selects it on page 1, pre-selected from the PAN's holder category.
   const gstConstitution = gstChk.result?.details?.constitutionOfBusiness;
+  const hasGst = !!f.gstin.trim() && !noGst;
+  const gstFetchFailed = !!gstChk.result && !gstChk.result.verified;
+  const constitutionEditable = panVerified && !gstConstitution && (!hasGst || gstFetchFailed);
+  const panSuggestion = constitutionFromPan(f.pan);
+  // The PAN the last pre-selection was made for, and the value it picked.
+  const lastAuto = useRef<{ pan?: string; value?: string }>({});
   useEffect(() => {
-    if (!panVerified || f.constitution) return;
-    const guess = suggestConstitution(f.pan, gstConstitution);
-    if (guess) setF((prev) => (prev.constitution ? prev : { ...prev, constitution: guess }));
-  }, [panVerified, f.pan, f.constitution, gstConstitution]);
+    if (gstConstitution) {
+      const v = constitutionFromGst(gstConstitution);
+      if (f.constitution !== v) setConstitution(v);
+      return;
+    }
+    if (!panVerified || lastAuto.current.pan === f.pan) return;
+    const prevAuto = lastAuto.current.value;
+    lastAuto.current = { pan: f.pan, value: panSuggestion?.value };
+    // Keep a choice the proposer made (or a restored draft's); replace only an earlier pre-selection.
+    if (panSuggestion && (!f.constitution || f.constitution === prevAuto)) {
+      setConstitution(panSuggestion.value);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gstConstitution, panVerified, f.pan, f.constitution, panSuggestion?.value]);
   function setConstitution(value: string) {
     setF((prev) => {
       const role = managementRole(value);
@@ -1127,6 +1146,11 @@ function NewCaseInner() {
       if (gstList.length > 0 && !f.gstin.trim()) {
         return "Select the vendor's GSTIN, or choose Other to enter one.";
       }
+      if (!f.constitution) {
+        return hasGst && !constitutionEditable
+          ? 'Fetch the GST details to fill in the type of constitution.'
+          : 'Select the type of constitution.';
+      }
     }
     if (n === 2) {
       if (sigPanErr || sigMobileErr || sigEmailErr) {
@@ -1205,8 +1229,8 @@ function NewCaseInner() {
       return;
     }
     if (!f.constitution) {
-      setError('Select the type of constitution under Management structure.');
-      setStep(3);
+      setError('Select the type of constitution on the Vendor & tax page.');
+      setStep(0);
       return;
     }
     if (mgmtRole && photoDocType && !photo.name) {
@@ -1598,6 +1622,44 @@ function NewCaseInner() {
                       <span className="field-hint">{gstChk.result.message}</span>
                     ) : null}
                   </div>
+                </label>
+              )}
+
+              {panVerified && (
+                <label className="span2">
+                  Type of constitution
+                  {constitutionEditable ? (
+                    <select
+                      value={f.constitution}
+                      required
+                      onChange={(e) => setConstitution(e.target.value)}
+                    >
+                      <option value="">Select</option>
+                      {CONSTITUTIONS.map((c) => (
+                        <option key={c} value={c}>
+                          {CONSTITUTION_LABELS[c]}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      readOnly
+                      value={
+                        isConstitution(f.constitution) ? CONSTITUTION_LABELS[f.constitution] : ''
+                      }
+                      placeholder="Filled in from the GST details"
+                    />
+                  )}
+                  <span className="field-hint">
+                    {gstConstitution
+                      ? `From the GST registration ("${gstConstitution}").`
+                      : !constitutionEditable
+                        ? 'Fetch the GST details to fill this in.'
+                        : panSuggestion && f.constitution === panSuggestion.value
+                          ? (panSuggestion.note ?? 'Selected from the PAN.') +
+                            ' Change it if needed.'
+                          : "Select the vendor's type of constitution."}
+                  </span>
                 </label>
               )}
 
@@ -2178,26 +2240,16 @@ function NewCaseInner() {
               <section className="card">
                 <h2>Management structure</h2>
                 <p className="section-intro">
-                  Choose the vendor&apos;s type of constitution; the details asked depend on it.
+                  {isConstitution(f.constitution) ? (
+                    <>
+                      Type of constitution: <strong>{CONSTITUTION_LABELS[f.constitution]}</strong>.
+                      The details asked depend on it.
+                    </>
+                  ) : (
+                    <>Select the type of constitution on the Vendor &amp; tax page first.</>
+                  )}{' '}
                   Personal details are encrypted when saved.
                 </p>
-                <div className="grid2">
-                  <label>
-                    Type of constitution
-                    <select
-                      value={f.constitution}
-                      required
-                      onChange={(e) => setConstitution(e.target.value)}
-                    >
-                      <option value="">Select</option>
-                      {CONSTITUTIONS.map((c) => (
-                        <option key={c} value={c}>
-                          {CONSTITUTION_LABELS[c]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
                 {mgmtRole && (
                   <>
                     <h3>{MANAGEMENT[mgmtRole].noun} details</h3>

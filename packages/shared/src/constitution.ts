@@ -4,28 +4,32 @@
  * directors of a company, or the Karta of a Hindu Undivided Family.
  */
 export const CONSTITUTIONS = [
-  'sole_proprietorship',
-  'partnership',
+  'charitable_trust',
+  'huf',
+  'joint_venture',
   'llp',
+  'non_profit',
+  'one_person_company',
+  'partnership',
   'private_limited',
   'public_limited',
-  'huf',
-  'trust_society',
-  'government',
+  'sole_proprietorship',
   'other',
 ] as const;
 export type Constitution = (typeof CONSTITUTIONS)[number];
 
 export const CONSTITUTION_LABELS: Record<Constitution, string> = {
-  sole_proprietorship: 'Sole proprietorship',
-  partnership: 'Partnership firm',
-  llp: 'Limited liability partnership (LLP)',
-  private_limited: 'Private limited company',
-  public_limited: 'Public limited company',
-  huf: 'Hindu Undivided Family (HUF)',
-  trust_society: 'Trust / society / association',
-  government: 'Government body',
-  other: 'Other',
+  charitable_trust: 'Charitable Trust',
+  huf: 'Hindu Undivided Family',
+  joint_venture: 'Joint Venture Company',
+  llp: 'Limited Liability Partnership',
+  non_profit: 'Non profit organization',
+  one_person_company: 'One person Company',
+  partnership: 'Partnership',
+  private_limited: 'Private Limited Company',
+  public_limited: 'Public Limited Company',
+  sole_proprietorship: 'Sole Proprietorship',
+  other: 'Others',
 };
 
 export const isConstitution = (v: unknown): v is Constitution =>
@@ -43,6 +47,8 @@ export function managementRole(c: string | null | undefined): ManagementRole | n
       return 'partner';
     case 'private_limited':
     case 'public_limited':
+    case 'one_person_company':
+    case 'joint_venture':
       return 'director';
     case 'huf':
       return 'karta';
@@ -169,43 +175,64 @@ export const MANAGEMENT: Record<ManagementRole, ManagementDef> = {
 export const personPhotoDocType = (role: ManagementRole) => `${role}_photo`;
 
 /**
- * Best guess at the constitution from the GST registry's "constitution of business", falling back
- * to the PAN holder type (4th character). The proposer can always change it.
+ * The constitution from the GST registry's "constitution of business" (e.g. "Proprietorship",
+ * "Private Limited Company"). A value that does not match a listed type is "Others".
  */
-export function suggestConstitution(
-  pan: string | undefined,
-  gstConstitution?: string,
-): Constitution | undefined {
-  const g = (gstConstitution ?? '').toLowerCase();
-  if (g) {
-    if (g.includes('proprietor')) return 'sole_proprietorship';
-    if (g.includes('limited liability')) return 'llp';
-    if (g.includes('partnership')) return 'partnership';
-    if (g.includes('hindu') || g.includes('huf')) return 'huf';
-    if (g.includes('private limited')) return 'private_limited';
-    if (g.includes('public limited')) return 'public_limited';
-    if (g.includes('trust') || g.includes('society') || g.includes('association')) {
-      return 'trust_society';
-    }
-    if (g.includes('government') || g.includes('local authority')) return 'government';
+export function constitutionFromGst(gstConstitution: string): Constitution {
+  const g = gstConstitution.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (g.includes('proprietor')) return 'sole_proprietorship';
+  if (g.includes('limited liability')) return 'llp';
+  if (g.includes('partnership')) return 'partnership';
+  if (g.includes('hindu undivided') || /\bhuf\b/.test(g)) return 'huf';
+  if (g.includes('one person')) return 'one_person_company';
+  if (g.includes('joint venture')) return 'joint_venture';
+  if (g.includes('private limited') || /\bpvt\.? ltd\b/.test(g)) return 'private_limited';
+  if (g.includes('public limited') || g.includes('public sector undertaking')) {
+    return 'public_limited';
   }
+  if (g.includes('non profit') || g.includes('non-profit') || g.includes('section 8')) {
+    return 'non_profit';
+  }
+  // A plain trust; the combined "Society / Club / Trust / AOP" needs a closer look, so it is Others.
+  if (g.includes('trust') && !/society|club|aop/.test(g)) return 'charitable_trust';
+  return 'other';
+}
+
+/**
+ * The constitution suggested by the PAN's 4th character (holder category), and a note when the
+ * holder category covers more than one type and the proposer should check it.
+ */
+export function constitutionFromPan(
+  pan: string | undefined,
+): { value: Constitution; note?: string } | undefined {
   switch ((pan ?? '').trim().toUpperCase().charAt(3)) {
     case 'P':
-      return 'sole_proprietorship';
-    case 'F':
-      return 'partnership';
+      return { value: 'sole_proprietorship' };
     case 'C':
-      return 'private_limited';
+      return {
+        value: 'private_limited',
+        note: 'The PAN is of a company: check whether it is private, public, one person or a joint venture.',
+      };
+    case 'F':
+      return {
+        value: 'partnership',
+        note: 'The PAN is of a firm: check whether it is a partnership or an LLP.',
+      };
     case 'H':
-      return 'huf';
+      return { value: 'huf' };
     case 'T':
+      return {
+        value: 'charitable_trust',
+        note: 'The PAN is of a trust: check whether it is a charitable trust.',
+      };
     case 'A':
     case 'B':
-      return 'trust_society';
-    case 'G':
-    case 'J':
+      return { value: 'other', note: 'The PAN is of an AOP / BOI: verify the legal structure.' };
     case 'L':
-      return 'government';
+    case 'J':
+      return { value: 'other' };
+    case 'G':
+      return { value: 'other', note: 'The PAN is of a government entity.' };
     default:
       return undefined;
   }

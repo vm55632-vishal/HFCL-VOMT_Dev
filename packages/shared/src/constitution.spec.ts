@@ -1,21 +1,38 @@
-import { managementRole, suggestConstitution } from './constitution';
+import { constitutionFromGst, constitutionFromPan, managementRole } from './constitution';
 
 describe('constitution', () => {
   it('asks about the right people for each constitution', () => {
     expect(managementRole('sole_proprietorship')).toBe('proprietor');
     expect(managementRole('partnership')).toBe('partner');
+    expect(managementRole('llp')).toBe('partner');
     expect(managementRole('private_limited')).toBe('director');
+    expect(managementRole('one_person_company')).toBe('director');
     expect(managementRole('huf')).toBe('karta');
-    expect(managementRole('trust_society')).toBeNull();
+    expect(managementRole('charitable_trust')).toBeNull();
     expect(managementRole(undefined)).toBeNull();
   });
 
-  it('suggests the constitution from GST first, then the PAN holder type', () => {
-    expect(suggestConstitution('ABCPE1234F', 'Proprietorship')).toBe('sole_proprietorship');
-    expect(suggestConstitution('ABCPE1234F', 'Private Limited Company')).toBe('private_limited');
-    expect(suggestConstitution('ABCFE1234F', 'Limited Liability Partnership')).toBe('llp');
-    expect(suggestConstitution('ABCHE1234F')).toBe('huf');
-    expect(suggestConstitution('ABCFE1234F')).toBe('partnership');
-    expect(suggestConstitution('')).toBeUndefined();
+  it('maps the GST constitution of business', () => {
+    expect(constitutionFromGst('Proprietorship')).toBe('sole_proprietorship');
+    expect(constitutionFromGst('Sole Proprietorship')).toBe('sole_proprietorship');
+    expect(constitutionFromGst('Private Limited Company')).toBe('private_limited');
+    expect(constitutionFromGst('Public Limited Company')).toBe('public_limited');
+    expect(constitutionFromGst('Limited Liability Partnership')).toBe('llp');
+    expect(constitutionFromGst('Partnership')).toBe('partnership');
+    expect(constitutionFromGst('Hindu Undivided Family')).toBe('huf');
+    expect(constitutionFromGst('One Person Company')).toBe('one_person_company');
+    expect(constitutionFromGst('Trust')).toBe('charitable_trust');
+    expect(constitutionFromGst('Society/ Club/ Trust/ AOP')).toBe('other');
+    expect(constitutionFromGst('Government Department')).toBe('other');
+  });
+
+  it('suggests the constitution from the PAN holder category', () => {
+    expect(constitutionFromPan('ABCPE1234F')?.value).toBe('sole_proprietorship');
+    expect(constitutionFromPan('ABCHE1234F')?.value).toBe('huf');
+    expect(constitutionFromPan('ABCFE1234F')).toMatchObject({ value: 'partnership' });
+    expect(constitutionFromPan('ABCCE1234F')?.note).toMatch(/company/);
+    expect(constitutionFromPan('ABCTE1234F')?.value).toBe('charitable_trust');
+    expect(constitutionFromPan('ABCGE1234F')?.value).toBe('other');
+    expect(constitutionFromPan('')).toBeUndefined();
   });
 });

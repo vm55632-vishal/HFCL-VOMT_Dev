@@ -124,7 +124,7 @@ describe('management structure by type of constitution', () => {
     expect(paths({ ...huf, partners: [karta, karta] })).toEqual(['partners']);
   });
   it('asks for no people for other constitutions', () => {
-    expect(paths({ ...base, constitution: 'trust_society', partners: [] })).toEqual([]);
+    expect(paths({ ...base, constitution: 'charitable_trust', partners: [] })).toEqual([]);
   });
 });
 
