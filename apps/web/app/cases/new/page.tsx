@@ -9,6 +9,7 @@ import {
   validateGstin,
   validateIfsc,
   rcLimitsFromVehicles,
+  categoryHasRcLimits,
   RC_LIMIT_PER_VEHICLE,
   CONSTITUTIONS,
   CONSTITUTION_LABELS,
@@ -1312,7 +1313,7 @@ function NewCaseInner() {
         contactNumber: r.contactNumber.trim(),
         email: r.email.trim(),
       }));
-      payload.rcLimits = f.rcLimits.map((r) => ({
+      payload.rcLimits = (categoryHasRcLimits(f.categoryKey) ? f.rcLimits : []).map((r) => ({
         financerName: r.financerName.trim(),
         rcLimit: Number(r.rcLimit),
         numberOfVehicles: Number(r.numberOfVehicles),
@@ -2438,137 +2439,142 @@ function NewCaseInner() {
                   <span className="muted tiny">{f.references.length} added · minimum 2</span>
                 </div>
               </section>
-              <section className="card">
-                <h2>RC limit</h2>
-                <p className="section-intro">
-                  List the revolving credit (RC) limits the vendor holds with its financers. The
-                  sanction loan limit and the credit limit are worked out for you as the number of
-                  vehicles × {'\u20B9'}
-                  {RC_LIMIT_PER_VEHICLE.toLocaleString('en-IN')}. Leave this empty if there are
-                  none.
-                </p>
-                {f.rcLimits.length > 0 && (
-                  <div className="partners__scroll">
-                    <table className="partners__tbl partners__tbl--rc">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Name of the financer</th>
-                          <th>RC limit (INR)</th>
-                          <th>Number of vehicles</th>
-                          <th>Sanction loan limit amount</th>
-                          <th>Credit limit amount (figures)</th>
-                          <th>Credit limit amount (words)</th>
-                          <th>Remarks</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {f.rcLimits.map((r, i) => {
-                          const d = rcLimitsFromVehicles(
-                            r.numberOfVehicles === '' ? null : Number(r.numberOfVehicles),
-                          );
-                          const inr = (n: number | null) =>
-                            n == null ? '\u2014' : `\u20B9 ${n.toLocaleString('en-IN')}`;
-                          return (
-                            <tr key={i}>
-                              <td className="partners__n">{i + 1}</td>
-                              <td>
-                                <input
-                                  aria-label={`RC limit ${i + 1} name of the financer`}
-                                  value={r.financerName}
-                                  maxLength={200}
-                                  required
-                                  onChange={(e) => setRcLimit(i, { financerName: e.target.value })}
-                                />
-                              </td>
-                              <td>
-                                <input
-                                  inputMode="decimal"
-                                  aria-label={`RC limit ${i + 1} amount in rupees`}
-                                  value={r.rcLimit}
-                                  maxLength={16}
-                                  pattern="[0-9]{1,13}(\.[0-9]{1,2})?"
-                                  title="Amount in rupees, up to two decimal places"
-                                  required
-                                  onChange={(e) =>
-                                    setRcLimit(i, {
-                                      rcLimit: e.target.value.replace(/[^0-9.]/g, ''),
-                                    })
-                                  }
-                                />
-                              </td>
-                              <td>
-                                <input
-                                  inputMode="numeric"
-                                  aria-label={`RC limit ${i + 1} number of vehicles`}
-                                  value={r.numberOfVehicles}
-                                  maxLength={6}
-                                  pattern="[1-9][0-9]{0,5}"
-                                  title="Whole number of vehicles, 1 or more"
-                                  required
-                                  onChange={(e) =>
-                                    setRcLimit(i, {
-                                      numberOfVehicles: e.target.value.replace(/\D/g, ''),
-                                    })
-                                  }
-                                />
-                              </td>
-                              <td className="partners__calc" aria-live="polite">
-                                {inr(d.sanctionLoanLimit)}
-                              </td>
-                              <td className="partners__calc" aria-live="polite">
-                                {inr(d.creditLimitFigures)}
-                              </td>
-                              <td className="partners__words" aria-live="polite">
-                                {d.creditLimitWords ?? '\u2014'}
-                              </td>
-                              <td>
-                                <textarea
-                                  aria-label={`RC limit ${i + 1} remarks`}
-                                  value={r.remarks}
-                                  rows={2}
-                                  maxLength={500}
-                                  onChange={(e) => setRcLimit(i, { remarks: e.target.value })}
-                                />
-                              </td>
-                              <td>
-                                <button
-                                  type="button"
-                                  className="btn btn--sm btn--ghost"
-                                  aria-label={`Remove RC limit ${i + 1}`}
-                                  onClick={() => removeRcLimit(i)}
-                                >
-                                  Remove
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                {f.rcLimits.length === 0 && <p className="muted">No RC limits added yet.</p>}
-                <div className="req__actions">
-                  <button
-                    type="button"
-                    className="btn btn--sm"
-                    disabled={f.rcLimits.length >= 20}
-                    onClick={addRcLimit}
-                  >
-                    + Add RC limit
-                  </button>
+              {/* RC limits are only asked for a used-car-loan dealer (Vendor Dealer UCL). */}
+              {categoryHasRcLimits(f.categoryKey) && (
+                <section className="card">
+                  <h2>RC limit</h2>
+                  <p className="section-intro">
+                    List the revolving credit (RC) limits the vendor holds with its financers. The
+                    sanction loan limit and the credit limit are worked out for you as the number of
+                    vehicles × {'\u20B9'}
+                    {RC_LIMIT_PER_VEHICLE.toLocaleString('en-IN')}. Leave this empty if there are
+                    none.
+                  </p>
                   {f.rcLimits.length > 0 && (
-                    <span className="muted tiny">
-                      Total RC limit: {'\u20B9'}
-                      {f.rcLimits
-                        .reduce((n, r) => n + (Number(r.rcLimit) || 0), 0)
-                        .toLocaleString('en-IN')}
-                    </span>
+                    <div className="partners__scroll">
+                      <table className="partners__tbl partners__tbl--rc">
+                        <thead>
+                          <tr>
+                            <th>#</th>
+                            <th>Name of the financer</th>
+                            <th>RC limit (INR)</th>
+                            <th>Number of vehicles</th>
+                            <th>Sanction loan limit amount</th>
+                            <th>Credit limit amount (figures)</th>
+                            <th>Credit limit amount (words)</th>
+                            <th>Remarks</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {f.rcLimits.map((r, i) => {
+                            const d = rcLimitsFromVehicles(
+                              r.numberOfVehicles === '' ? null : Number(r.numberOfVehicles),
+                            );
+                            const inr = (n: number | null) =>
+                              n == null ? '\u2014' : `\u20B9 ${n.toLocaleString('en-IN')}`;
+                            return (
+                              <tr key={i}>
+                                <td className="partners__n">{i + 1}</td>
+                                <td>
+                                  <input
+                                    aria-label={`RC limit ${i + 1} name of the financer`}
+                                    value={r.financerName}
+                                    maxLength={200}
+                                    required
+                                    onChange={(e) =>
+                                      setRcLimit(i, { financerName: e.target.value })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    inputMode="decimal"
+                                    aria-label={`RC limit ${i + 1} amount in rupees`}
+                                    value={r.rcLimit}
+                                    maxLength={16}
+                                    pattern="[0-9]{1,13}(\.[0-9]{1,2})?"
+                                    title="Amount in rupees, up to two decimal places"
+                                    required
+                                    onChange={(e) =>
+                                      setRcLimit(i, {
+                                        rcLimit: e.target.value.replace(/[^0-9.]/g, ''),
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    inputMode="numeric"
+                                    aria-label={`RC limit ${i + 1} number of vehicles`}
+                                    value={r.numberOfVehicles}
+                                    maxLength={6}
+                                    pattern="[1-9][0-9]{0,5}"
+                                    title="Whole number of vehicles, 1 or more"
+                                    required
+                                    onChange={(e) =>
+                                      setRcLimit(i, {
+                                        numberOfVehicles: e.target.value.replace(/\D/g, ''),
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td className="partners__calc" aria-live="polite">
+                                  {inr(d.sanctionLoanLimit)}
+                                </td>
+                                <td className="partners__calc" aria-live="polite">
+                                  {inr(d.creditLimitFigures)}
+                                </td>
+                                <td className="partners__words" aria-live="polite">
+                                  {d.creditLimitWords ?? '\u2014'}
+                                </td>
+                                <td>
+                                  <textarea
+                                    aria-label={`RC limit ${i + 1} remarks`}
+                                    value={r.remarks}
+                                    rows={2}
+                                    maxLength={500}
+                                    onChange={(e) => setRcLimit(i, { remarks: e.target.value })}
+                                  />
+                                </td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="btn btn--sm btn--ghost"
+                                    aria-label={`Remove RC limit ${i + 1}`}
+                                    onClick={() => removeRcLimit(i)}
+                                  >
+                                    Remove
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
-                </div>
-              </section>
+                  {f.rcLimits.length === 0 && <p className="muted">No RC limits added yet.</p>}
+                  <div className="req__actions">
+                    <button
+                      type="button"
+                      className="btn btn--sm"
+                      disabled={f.rcLimits.length >= 20}
+                      onClick={addRcLimit}
+                    >
+                      + Add RC limit
+                    </button>
+                    {f.rcLimits.length > 0 && (
+                      <span className="muted tiny">
+                        Total RC limit: {'\u20B9'}
+                        {f.rcLimits
+                          .reduce((n, r) => n + (Number(r.rcLimit) || 0), 0)
+                          .toLocaleString('en-IN')}
+                      </span>
+                    )}
+                  </div>
+                </section>
+              )}
 
               <div className="req__actions">
                 <button className="btn btn--ghost" type="button" onClick={() => goTo(2)}>

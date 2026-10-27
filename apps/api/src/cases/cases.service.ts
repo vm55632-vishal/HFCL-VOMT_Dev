@@ -17,6 +17,7 @@ import {
   maskAccount,
   maskPan,
   rcLimitsFromVehicles,
+  categoryHasRcLimits,
   newId,
   PERMISSIONS,
   activeReviewStages,
@@ -370,8 +371,9 @@ export class CasesService {
     }
   }
 
-  /** Rows for rc_limits (nested under the case). */
-  private buildRcLimitRows(rows?: Partial<RcLimitInput>[]) {
+  /** Rows for rc_limits (nested under the case). Only a category that asks for RC limits keeps them. */
+  private buildRcLimitRows(rows: Partial<RcLimitInput>[] | undefined, categoryKey: string) {
+    if (!categoryHasRcLimits(categoryKey)) return [];
     return (rows ?? []).map((r, i) => {
       // The sanction / credit limits are derived from the vehicle count, never trusted from the client.
       const d = rcLimitsFromVehicles(r.numberOfVehicles);
@@ -1032,7 +1034,7 @@ export class CasesService {
           },
           partners: { create: partnerRows },
           vendorReferences: { create: this.buildReferenceRows(input.references) },
-          rcLimits: { create: this.buildRcLimitRows(input.rcLimits) },
+          rcLimits: { create: this.buildRcLimitRows(input.rcLimits, input.categoryKey) },
           ...(teamRow ? { teamStructure: { create: { id: newId(), ...teamRow } } } : {}),
           checklist: {
             create: pack.map((it) => ({
@@ -1760,7 +1762,7 @@ export class CasesService {
         },
         partners: { create: partnerRows },
         vendorReferences: { create: this.buildReferenceRows(input.references) },
-        rcLimits: { create: this.buildRcLimitRows(input.rcLimits) },
+        rcLimits: { create: this.buildRcLimitRows(input.rcLimits, input.categoryKey) },
         teamStructure: { create: { id: newId(), ...teamRow } },
         activity: {
           create: { id: newId(), actorId: actor.id, action: 'draft_created', toStage: 'draft' },
@@ -1826,7 +1828,10 @@ export class CasesService {
         onBehalfOfId: proposer.id === c.createdById ? null : proposer.id,
         partners: { deleteMany: {}, create: partnerRows },
         vendorReferences: { deleteMany: {}, create: this.buildReferenceRows(input.references) },
-        rcLimits: { deleteMany: {}, create: this.buildRcLimitRows(input.rcLimits) },
+        rcLimits: {
+          deleteMany: {},
+          create: this.buildRcLimitRows(input.rcLimits, input.categoryKey),
+        },
         teamStructure: {
           upsert: { create: { id: newId(), ...teamRow }, update: teamRow },
         },
@@ -2056,7 +2061,10 @@ export class CasesService {
           create: await this.buildPartnerRows(input.partners, input.constitution),
         },
         vendorReferences: { deleteMany: {}, create: this.buildReferenceRows(input.references) },
-        rcLimits: { deleteMany: {}, create: this.buildRcLimitRows(input.rcLimits) },
+        rcLimits: {
+          deleteMany: {},
+          create: this.buildRcLimitRows(input.rcLimits, input.categoryKey),
+        },
         ...(teamRow
           ? {
               teamStructure: {

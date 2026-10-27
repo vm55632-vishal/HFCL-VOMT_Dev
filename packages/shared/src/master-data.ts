@@ -205,3 +205,8 @@ export const DEFAULT_WORKFLOW: WorkflowDefinition = {
     },
   ],
 };
+
+/** Vendor categories that are asked for RC (revolving credit) limits: used-car-loan dealers only. */
+export const RC_LIMIT_CATEGORIES: readonly string[] = ['vendor_dealer_ucl'];
+export const categoryHasRcLimits = (categoryKey?: string | null): boolean =>
+  !!categoryKey && RC_LIMIT_CATEGORIES.includes(categoryKey);
