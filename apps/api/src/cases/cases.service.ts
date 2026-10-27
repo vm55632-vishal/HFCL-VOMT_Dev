@@ -890,6 +890,20 @@ export class CasesService {
     return flags;
   }
 
+  /**
+   * New cases may only use a category that is offered on the intake form (active). A case that is
+   * already on a category keeps it even if the category was switched off later.
+   */
+  private assertOffered<T extends { key: string; active: boolean }>(
+    category: T,
+    current?: string,
+  ): T {
+    if (!category.active && category.key !== current) {
+      throw new BadRequestException('This vendor category is not available for new requests.');
+    }
+    return category;
+  }
+
   // ---------- lifecycle ----------
 
   async create(actor: AuthUser, input: CaseCreateInput) {
@@ -919,6 +933,7 @@ export class CasesService {
         phone: input.contactPhone,
       }),
     ]);
+    this.assertOffered(category);
     const published = await this.workflows.getPublished(category.workflowKey);
 
     const risk = assessRisk(this.riskInputFrom(input, category.enhancedDueDiligence));
@@ -1665,7 +1680,7 @@ export class CasesService {
     const proposer = await this.team.proposerFor(actor, input.proposerId);
     await this.assertSubCategory(input);
     const [category, ref, general, partnerRows, teamRow] = await Promise.all([
-      this.categories.get(input.categoryKey),
+      this.categories.get(input.categoryKey).then((cat) => this.assertOffered(cat)),
       this.nextRef(),
       this.draftGeneral(input),
       this.buildPartnerRows(input.partners),
@@ -1715,7 +1730,14 @@ export class CasesService {
   private async ownDraft(actor: AuthUser, id: string) {
     const c = await this.prisma.case.findUnique({
       where: { id },
-      select: { id: true, ref: true, stage: true, createdById: true, onBehalfOfId: true },
+      select: {
+        id: true,
+        ref: true,
+        stage: true,
+        createdById: true,
+        onBehalfOfId: true,
+        categoryKey: true,
+      },
     });
     // A draft is private to its owners, so anyone else is told it does not exist.
     if (!c || !isCaseOwner(c, actor.id)) throw new NotFoundException('Case not found.');
@@ -1735,7 +1757,8 @@ export class CasesService {
       input.proposerId ?? c.onBehalfOfId ?? c.createdById,
     );
     const [category, general, partnerRows, teamRow] = await Promise.all([
-      this.categories.get(input.categoryKey),
+      // A draft already on a category that was later switched off may stay on it.
+      this.categories.get(input.categoryKey).then((cat) => this.assertOffered(cat, c.categoryKey)),
       this.draftGeneral(input),
       this.buildPartnerRows(input.partners),
       this.team.resolve(proposer, input.teamOverrides),
@@ -1852,6 +1875,7 @@ export class CasesService {
       this.categories.get(input.categoryKey),
       this.assertSubCategory(input),
     ]);
+    this.assertOffered(category, c.categoryKey);
     const def = await this.workflows.publishedDefinition(category.workflowKey);
     // First submission takes the category's approval levels; a resubmitted case keeps its own.
     const approvalLevels = isDraft

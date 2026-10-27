@@ -210,8 +210,14 @@ async function seedMasterData(): Promise<void> {
         requiredDocuments: c.requiredDocuments,
         requiredValidations: c.requiredValidations,
         workflowKey: c.workflowKey,
+        active: c.active,
       },
-      update: { name: c.name, description: c.description, sortOrder: c.sortOrder },
+      update: {
+        name: c.name,
+        description: c.description,
+        sortOrder: c.sortOrder,
+        active: c.active,
+      },
     });
   }
   console.warn(`  categories: ${DEFAULT_CATEGORIES.length} upserted`);

@@ -15,12 +15,15 @@ export interface VendorCategoryDef {
   requiredValidations: string[];
   /** Workflow key this category routes through. */
   workflowKey: string;
+  /** Offered on the intake form. Inactive categories stay for existing cases and can be re-enabled. */
+  active: boolean;
 }
 
 export const DEFAULT_WORKFLOW_KEY = 'standard-vendor';
 
 const STD_DOCS = ['pan_card', 'gst_certificate', 'cancelled_cheque'];
 const STD_CHECKS = ['pan', 'gstin', 'bank'];
+const INACTIVE = { active: false } as const;
 
 /** A sub-category (VOMT account group) under a parent vendor category. */
 export interface SubCategoryDef {
@@ -35,31 +38,35 @@ export interface SubCategoryDef {
  * (`DEFAULT_SUBCATEGORIES` below) = the `VOMT_VendorAccountGroupName` mappings. All route through
  * the standard workflow; admins can re-point, flag EDD, or edit docs/checks per category.
  */
+// Offered on the intake form, in this order (user decision 2026-10-27). The rest are kept inactive:
+// earlier cases still reference some of them, and an admin can re-enable one on the categories page.
 export const DEFAULT_CATEGORIES: VendorCategoryDef[] = [
-  cat('plant_vendor', 'Plant Vendor', 10),
-  cat('onetime_vendor', 'One time Vendor', 20, {
-    requiredDocuments: ['pan_card', 'cancelled_cheque'],
-    requiredValidations: ['pan', 'bank'],
-  }),
-  cat('gst_partner', 'GST partner', 30),
-  cat('vendor_rent', 'Vendor Rent', 40),
-  cat('vendor_collection', 'Vendor Collection', 50),
-  cat('vendor_legal_professional', 'Vendor Legal & Professional', 60),
-  cat('vendor_dsa', 'Vendor DSA', 70),
-  cat('vendor_dealer_twl', 'Vendor Dealer TWL', 80),
-  cat('vendor_dealer_ucl', 'Vendor Dealer UCL', 90),
-  cat('vendor_foreign_creditor', 'Vendor Foreign', 100, {
+  cat('vendor_others_domestic', 'Vendor Others Domestic', 10),
+  cat('vendor_collection', 'Vendor Collection', 20),
+  cat('vendor_dealer_twl', 'Vendor Dealer TWL', 30),
+  cat('vendor_dealer_ucl', 'Vendor Dealer UCL', 40),
+  cat('vendor_foreign_creditor', 'Vendor Foreign', 50, {
     enhancedDueDiligence: true,
     requiredDocuments: ['tax_residency_certificate', 'bank_details'],
     requiredValidations: ['bank'],
   }),
-  cat('vendor_employees_on_roll', 'Vendor Employees On Roll', 110),
-  cat('vendor_employees_off_roll', 'Vendor Employees off Roll', 120),
-  cat('vendor_others_domestic', 'Vendor Others Domestic', 130),
-  cat('vendor_intercompany', 'Vendor Intercompany', 140),
-  cat('vendor_employees_joining_bonus', 'Vendor Employees Joining Bonus', 150),
-  cat('vendor_dealer_ecv', 'Vendor Dealer ECV', 160),
-  cat('vendor_dealer_ncl', 'Vendor Dealer NCL', 170),
+  cat('vendor_dealer_ecv', 'Vendor Dealer ECV', 60),
+  cat('vendor_dealer_ncl', 'Vendor Dealer NCL', 70),
+  // inactive
+  cat('plant_vendor', 'Plant Vendor', 110, INACTIVE),
+  cat('onetime_vendor', 'One time Vendor', 120, {
+    ...INACTIVE,
+    requiredDocuments: ['pan_card', 'cancelled_cheque'],
+    requiredValidations: ['pan', 'bank'],
+  }),
+  cat('gst_partner', 'GST partner', 130, INACTIVE),
+  cat('vendor_rent', 'Vendor Rent', 140, INACTIVE),
+  cat('vendor_legal_professional', 'Vendor Legal & Professional', 150, INACTIVE),
+  cat('vendor_dsa', 'Vendor DSA', 160, INACTIVE),
+  cat('vendor_employees_on_roll', 'Vendor Employees On Roll', 170, INACTIVE),
+  cat('vendor_employees_off_roll', 'Vendor Employees off Roll', 180, INACTIVE),
+  cat('vendor_intercompany', 'Vendor Intercompany', 190, INACTIVE),
+  cat('vendor_employees_joining_bonus', 'Vendor Employees Joining Bonus', 200, INACTIVE),
 ];
 
 /** Sub-categories (VOMT account groups) keyed to their parent category. */
@@ -103,6 +110,7 @@ function cat(
     requiredDocuments: STD_DOCS,
     requiredValidations: STD_CHECKS,
     workflowKey: DEFAULT_WORKFLOW_KEY,
+    active: true,
     ...overrides,
   };
 }
