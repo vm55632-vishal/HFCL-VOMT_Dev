@@ -220,7 +220,11 @@ export default function VendorDetailsModal({
 
             {data.partners && data.partners.length > 0 && (
               <Card
-                title={`Management structure — ${mgmt.noun}${data.partners.length > 1 ? 's' : ''} (${data.partners.length})`}
+                title={
+                  mgmt.single
+                    ? `Management structure — ${mgmt.noun}`
+                    : `Management structure — ${mgmt.noun}s (${data.partners.length})`
+                }
                 icon="user"
               >
                 {data.constitution && isConstitution(data.constitution) && (
@@ -229,28 +233,41 @@ export default function VendorDetailsModal({
                     value={CONSTITUTION_LABELS[data.constitution]}
                   />
                 )}
-                <div style={{ gridColumn: '1 / -1', overflowX: 'auto' }}>
-                  <table className="partners__tbl" style={{ minWidth: 1100 }}>
-                    <thead>
-                      <tr>
-                        {mgmt.fields.map((k) => (
-                          <th key={k}>{PERSON_FIELD_LABELS[k]}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.partners.map((p, i) => (
-                        <tr key={p.id ?? i}>
+                {mgmt.single ? (
+                  // One proprietor / Karta: field by field, as in the questionnaire.
+                  mgmt.fields.map((k) => (
+                    <Field
+                      key={k}
+                      label={PERSON_FIELD_LABELS[k]}
+                      value={data.partners?.[0]?.[k]}
+                      mono={k === 'pan'}
+                      wide={/address/i.test(k)}
+                    />
+                  ))
+                ) : (
+                  <div style={{ gridColumn: '1 / -1', overflowX: 'auto' }}>
+                    <table className="partners__tbl" style={{ minWidth: 1100 }}>
+                      <thead>
+                        <tr>
                           {mgmt.fields.map((k) => (
-                            <td key={k}>
-                              {k === 'pan' ? <code>{p.pan ?? '—'}</code> : p[k] || '—'}
-                            </td>
+                            <th key={k}>{PERSON_FIELD_LABELS[k]}</th>
                           ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {data.partners.map((p, i) => (
+                          <tr key={p.id ?? i}>
+                            {mgmt.fields.map((k) => (
+                              <td key={k}>
+                                {k === 'pan' ? <code>{p.pan ?? '—'}</code> : p[k] || '—'}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </Card>
             )}
 
