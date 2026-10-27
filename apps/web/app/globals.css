@@ -4353,3 +4353,7 @@ div.kyc__row {
 .dk-step-head p {
   margin: 2px 0 0;
 }
+/* Digi KYC as the last step of the intake form: room above the form's buttons. */
+[data-step] .dk {
+  margin-bottom: 24px;
+}
