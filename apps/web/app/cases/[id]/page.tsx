@@ -348,9 +348,11 @@ export default function CaseDetail() {
         icon="building"
         aside={
           <div className="req__actions">
-            <Link className="btn btn--sm btn--ghost" href={`/cases/${c.id}/kyc`}>
-              {roles.includes('fcu') ? 'Digi KYC & risk checks' : 'Digi KYC'}
-            </Link>
+            {roles.includes('fcu') && (
+              <Link className="btn btn--sm btn--ghost" href={`/cases/${c.id}/kyc`}>
+                Digi KYC & risk checks
+              </Link>
+            )}
             <button
               type="button"
               className="btn btn--sm btn--ghost"
@@ -923,9 +925,11 @@ export default function CaseDetail() {
           <div className="card__head">
             <h2>Vendor details</h2>
             <div className="req__actions">
-              <Link className="btn btn--sm btn--ghost" href={`/cases/${c.id}/kyc`}>
-                {roles.includes('fcu') ? 'Digi KYC & risk checks' : 'Digi KYC'}
-              </Link>
+              {roles.includes('fcu') && (
+                <Link className="btn btn--sm btn--ghost" href={`/cases/${c.id}/kyc`}>
+                  Digi KYC & risk checks
+                </Link>
+              )}
               <button
                 type="button"
                 className="btn btn--sm btn--ghost"
