@@ -151,11 +151,29 @@ export default function CaseFiles({
         ) : shown.length === 0 ? (
           <p className="cf-none muted">No files match.</p>
         ) : (
-          <ul className="cf-list">
-            {shown.map((f) => (
-              <FileRow key={f.id} caseId={caseId} f={f} />
-            ))}
-          </ul>
+          <div className="cf-tablewrap">
+            <table className="cf-table">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Type</th>
+                  <th>Uploaded from</th>
+                  <th>Uploaded by</th>
+                  <th>Uploaded on</th>
+                  <th>Comment</th>
+                  <th>Status</th>
+                  <th>
+                    <span className="sr-only">Download</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((f) => (
+                  <FileRow key={f.id} caseId={caseId} f={f} />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>
@@ -166,71 +184,64 @@ function FileRow({ caseId, f }: { caseId: string; f: CaseFile }) {
   const clean = f.status === 'CLEAN';
   const kind = f.fileType === 'pdf' ? 'PDF' : f.fileType.toUpperCase();
   return (
-    <li className="cf-file">
-      <span
-        className={`cf-type cf-type--${f.fileType === 'pdf' ? 'pdf' : 'img'}`}
-        aria-hidden="true"
-      >
-        {kind}
-      </span>
-      <div className="cf-main">
-        <div className="cf-name">
-          <strong title={f.filename}>{f.filename}</strong>
-          {f.version > 1 && <span className="cf-ver">v{f.version}</span>}
+    <tr>
+      <td>
+        <div className="cf-filecell">
+          <span
+            className={`cf-type cf-type--${f.fileType === 'pdf' ? 'pdf' : 'img'}`}
+            aria-hidden="true"
+          >
+            {kind}
+          </span>
+          <div className="cf-main">
+            <div className="cf-name">
+              <strong title={f.filename}>{f.filename}</strong>
+              {f.version > 1 && <span className="cf-ver">v{f.version}</span>}
+            </div>
+            <span className="cf-sub" title={`SHA-256 ${f.sha256}`}>
+              {size(f.sizeBytes)}
+            </span>
+          </div>
         </div>
-        <div className="cf-sub">
-          <span className="cf-doctype">{docTypeLabel(f.docType)}</span>
-          <span>{size(f.sizeBytes)}</span>
-          <span title={`SHA-256 ${f.sha256}`}>#{f.sha256.slice(0, 8)}</span>
-        </div>
-        <dl className="cf-meta">
-          <div>
-            <dt>Uploaded from</dt>
-            <dd>
-              <Icon name={SOURCE_ICON[f.source ?? 'case_files'] ?? 'folder'} size={14} />
-              {sourceLabel(f.source)}
-            </dd>
-          </div>
-          <div>
-            <dt>Uploaded by</dt>
-            <dd>
-              <span className="cf-avatar" aria-hidden="true">
-                {initials(f.uploadedByName ?? '') || '?'}
-              </span>
-              {f.uploadedByName ?? 'Unknown user'}
-            </dd>
-          </div>
-          <div>
-            <dt>Uploaded on</dt>
-            <dd>
-              <Icon name="clock" size={14} />
-              {when(f.createdAt)}
-            </dd>
-          </div>
-        </dl>
-        {f.comment && (
-          <p className="cf-comment">
-            <Icon name="doc" size={14} />
-            <span>{f.comment}</span>
-          </p>
-        )}
-      </div>
-      <div className="cf-actions">
+      </td>
+      <td className="cf-doctype">{docTypeLabel(f.docType)}</td>
+      <td>
+        <span className="cf-inline">
+          <Icon name={SOURCE_ICON[f.source ?? 'case_files'] ?? 'folder'} size={14} />
+          {sourceLabel(f.source)}
+        </span>
+      </td>
+      <td>
+        <span className="cf-inline">
+          <span className="cf-avatar" aria-hidden="true">
+            {initials(f.uploadedByName ?? '') || '?'}
+          </span>
+          {f.uploadedByName ?? 'Unknown user'}
+        </span>
+      </td>
+      <td className="cf-when">{when(f.createdAt)}</td>
+      <td className="cf-commentcell">
+        {f.comment ? <span title={f.comment}>{f.comment}</span> : <span className="muted">—</span>}
+      </td>
+      <td>
         <span className={`cf-status${clean ? ' is-clean' : ''}`}>
           <Icon name={clean ? 'shield' : 'alert'} size={14} />
-          {clean ? 'Scanned clean' : f.status.toLowerCase()}
+          {clean ? 'Clean' : f.status.toLowerCase()}
         </span>
+      </td>
+      <td className="cf-dlcell">
         {clean && (
           <a
-            className="btn btn--sm btn--ghost cf-dl"
+            className="cf-dl"
             href={`${API_BASE}/cases/${caseId}/documents/${f.id}/download`}
             aria-label={`Download ${f.filename}`}
+            title="Download"
           >
-            <Icon name="download" size={16} /> Download
+            <Icon name="download" size={16} />
           </a>
         )}
-      </div>
-    </li>
+      </td>
+    </tr>
   );
 }
 
