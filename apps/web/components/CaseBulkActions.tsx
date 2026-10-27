@@ -47,8 +47,6 @@ const ITEMS: { action: MenuAction; label: string; hint: string; danger?: boolean
     danger: true,
   },
   { action: 'reopen', label: 'Reopen', hint: 'Only cancelled or rejected cases can be reopened' },
-  { action: 'hold', label: 'On hold', hint: 'Only open, submitted cases can be put on hold' },
-  { action: 'resume', label: 'Resume from hold', hint: 'Only cases on hold can be resumed' },
   {
     action: 'delete',
     label: 'Delete',
