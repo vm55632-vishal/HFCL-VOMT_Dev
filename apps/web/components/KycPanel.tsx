@@ -315,6 +315,8 @@ export default function KycPanel({
         )}
       </section>
 
+      <Guide status={digi.status} embedded={embedded} email={signatory.email} />
+
       {risk && (
         <section className="dk-card">
           <div className="dk-card__head">
@@ -362,6 +364,131 @@ export default function KycPanel({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * "How Digi KYC works": the three steps and what each outcome means, matching what the app does.
+ * Open until the request is sent, then folded away; the outcome that applies is highlighted.
+ */
+function Guide({
+  status,
+  embedded,
+  email,
+}: {
+  status: KycStatus;
+  embedded: boolean;
+  email: string;
+}) {
+  const [open, setOpen] = useState<boolean | null>(null);
+  const isOpen = open ?? status === 'not_initiated';
+  const next = embedded ? 'the Submit button appears' : 'the case moves on';
+  const steps = [
+    {
+      icon: 'mail',
+      title: 'Initiate',
+      text: (
+        <>
+          Click <b>Initiate Digi KYC</b>. A secure link is emailed to the authorised signatory
+          {email ? (
+            <>
+              {' '}
+              at <b>{email}</b>
+            </>
+          ) : null}
+          . Check the address first: the link goes only there.
+        </>
+      ),
+    },
+    {
+      icon: 'user',
+      title: 'Vendor verifies',
+      text: (
+        <>
+          The signatory opens the link and completes Digi KYC. The status here updates on its own;
+          no need to refresh.
+        </>
+      ),
+    },
+  ];
+  const outcomes: { key: KycStatus; tone: Tone; icon: string; title: string; text: string }[] = [
+    {
+      key: 'passed',
+      tone: 'ok',
+      icon: 'check',
+      title: 'Completed',
+      text: `Verified, and ${next}.`,
+    },
+    {
+      key: 'incomplete',
+      tone: 'warn',
+      icon: 'alert',
+      title: 'Not completed',
+      text: 'The link expired or was left unfinished. Initiate Digi KYC again to send a new link.',
+    },
+    {
+      key: 'failed',
+      tone: 'danger',
+      icon: 'x',
+      title: 'Rejected',
+      text: 'Verification failed. The reason shows above and the case is flagged for review.',
+    },
+  ];
+
+  return (
+    <section className="dk-guide">
+      <button
+        type="button"
+        className="dk-guide__toggle"
+        aria-expanded={isOpen}
+        onClick={() => setOpen(!isOpen)}
+      >
+        <Icon name="doc" size={16} />
+        How Digi KYC works
+        <span className={`dk-guide__chev${isOpen ? ' is-open' : ''}`} aria-hidden="true">
+          <Icon name="chevron" size={16} />
+        </span>
+      </button>
+      {isOpen && (
+        <div className="dk-guide__body">
+          <ol className="dk-guide__steps">
+            {steps.map((s, i) => (
+              <li key={s.title}>
+                <span className="dk-guide__num" aria-hidden="true">
+                  {i + 1}
+                </span>
+                <div>
+                  <strong>{s.title}</strong>
+                  <p>{s.text}</p>
+                </div>
+              </li>
+            ))}
+            <li>
+              <span className="dk-guide__num" aria-hidden="true">
+                3
+              </span>
+              <div>
+                <strong>Result</strong>
+                <ul className="dk-guide__outcomes">
+                  {outcomes.map((o) => (
+                    <li
+                      key={o.key}
+                      className={`dk-outcome dk-outcome--${o.tone}${status === o.key ? ' is-current' : ''}`}
+                    >
+                      <Icon name={o.icon} size={16} />
+                      <span>
+                        <b>{o.title}</b>
+                        {o.text}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </li>
+          </ol>
+        </div>
+      )}
+    </section>
   );
 }
 

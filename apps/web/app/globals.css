@@ -4311,6 +4311,130 @@ div.kyc__row {
   font-size: 12px;
   color: var(--muted);
 }
+.dk-guide {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.dk-guide__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 20px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.dk-guide__toggle > svg {
+  color: var(--accent);
+}
+.dk-guide__toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.dk-guide__chev {
+  display: inline-flex;
+  margin-left: auto;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.dk-guide__chev.is-open {
+  transform: rotate(180deg);
+}
+.dk-guide__body {
+  padding: 0 20px 18px;
+}
+.dk-guide__steps {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dk-guide__steps > li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 12px;
+}
+.dk-guide__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-quiet);
+  border-radius: 50%;
+}
+.dk-guide__steps strong {
+  display: block;
+  font-size: 14px;
+  color: var(--heading);
+}
+.dk-guide__steps p {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.dk-guide__steps p b {
+  color: var(--text);
+}
+.dk-guide__outcomes {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.dk-outcome {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+.dk-outcome svg {
+  flex: none;
+  margin-top: 1px;
+}
+.dk-outcome b {
+  margin-right: 6px;
+  color: var(--heading);
+}
+.dk-outcome--ok svg {
+  color: var(--ok);
+}
+.dk-outcome--warn svg {
+  color: var(--warn);
+}
+.dk-outcome--danger svg {
+  color: var(--danger);
+}
+.dk-outcome.is-current.dk-outcome--ok {
+  background: var(--ok-bg);
+  border-color: var(--ok);
+}
+.dk-outcome.is-current.dk-outcome--warn {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+.dk-outcome.is-current.dk-outcome--danger {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
 .dk-skeleton {
   gap: 12px;
 }
