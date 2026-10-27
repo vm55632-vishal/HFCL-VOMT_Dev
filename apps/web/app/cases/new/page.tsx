@@ -2600,28 +2600,25 @@ function NewCaseInner() {
         <div data-step="4" hidden={step !== 4}>
           {panVerified && step === 4 && (
             <>
-              <section className="card">
+              <div className="dk-step-head">
                 <h2>Digi KYC</h2>
-                <p className="section-intro">
-                  Run Digi KYC and the risk checks on the authorised signatory before raising the
-                  case. The checks run one after another; you can raise the case while they run.
-                </p>
-                {kycCaseId ? (
-                  <KycPanel
-                    caseId={kycCaseId}
-                    embedded
-                    beforeInitiate={
-                      kind === 'resubmit'
-                        ? undefined
-                        : async () => {
-                            await flushDraft();
-                          }
-                    }
-                  />
-                ) : (
-                  <p className="muted">{draftError ?? 'Saving the draft so the checks can run…'}</p>
-                )}
-              </section>
+                <p className="muted">You can raise the case while the vendor completes it.</p>
+              </div>
+              {kycCaseId ? (
+                <KycPanel
+                  caseId={kycCaseId}
+                  embedded
+                  beforeInitiate={
+                    kind === 'resubmit'
+                      ? undefined
+                      : async () => {
+                          await flushDraft();
+                        }
+                  }
+                />
+              ) : (
+                <p className="muted">{draftError ?? 'Saving the draft…'}</p>
+              )}
 
               <div className="req__actions">
                 <button className="btn btn--ghost" type="button" onClick={() => goTo(3)}>

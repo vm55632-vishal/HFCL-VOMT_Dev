@@ -84,6 +84,13 @@ const paths: Record<string, React.ReactNode> = {
       <path d="M3 13l9 5 9-5" />
     </>
   ),
+  tick: <path d="M5 12.5l4.5 4.5L19 7.5" />,
+  mail: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M3.5 6.5l8.5 6.5 8.5-6.5" />
+    </>
+  ),
   clock: (
     <>
       <circle cx="12" cy="12" r="8.5" />

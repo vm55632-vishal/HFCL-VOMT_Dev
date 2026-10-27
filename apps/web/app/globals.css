@@ -4006,3 +4006,350 @@ code {
 div.kyc__row {
   cursor: default;
 }
+
+/* ---------- Digi KYC (dk-) ---------- */
+.dk {
+  display: grid;
+  gap: 16px;
+}
+.dk-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.dk-head h1 {
+  margin: 0;
+  font-size: 22px;
+}
+.dk-head p {
+  margin: 2px 0 0;
+}
+.dk-head__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: var(--indigo);
+  background: var(--indigo-bg);
+}
+.dk-card {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.dk-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dk-card__head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.dk-tag {
+  margin-left: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+  color: var(--indigo);
+  background: var(--indigo-bg);
+  border-radius: 999px;
+}
+.dk-person {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+.dk-person--compact {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--elevated);
+  border-radius: var(--radius-sm);
+}
+.dk-avatar {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-quiet);
+  border-radius: 50%;
+}
+.dk-person__who {
+  display: grid;
+  min-width: 0;
+}
+.dk-person__who strong {
+  color: var(--heading);
+}
+.dk-person__who .muted {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.dk-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 0 auto;
+  padding: 0;
+  list-style: none;
+}
+.dk-chips li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--elevated);
+  border-radius: 999px;
+  overflow-wrap: anywhere;
+}
+.dk-chips li svg {
+  flex: none;
+  color: var(--muted);
+}
+.dk-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border-radius: var(--radius-sm);
+  background: var(--elevated);
+}
+.dk-status__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--panel);
+}
+.dk-status__text {
+  display: grid;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.dk-status__text strong {
+  font-size: 16px;
+  color: var(--heading);
+}
+.dk-status__text span {
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.dk-status .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.dk-status--accent {
+  background: var(--accent-quiet);
+}
+.dk-status--accent .dk-status__icon {
+  color: var(--accent);
+}
+.dk-status--ok {
+  background: var(--ok-bg);
+}
+.dk-status--ok .dk-status__icon {
+  color: var(--ok);
+}
+.dk-status--danger {
+  background: var(--danger-bg);
+}
+.dk-status--danger .dk-status__icon {
+  color: var(--danger);
+}
+.dk-status--warn {
+  background: var(--warn-bg);
+}
+.dk-status--warn .dk-status__icon {
+  color: var(--warn);
+}
+.dk-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dk-step {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-right: 12px;
+}
+.dk-step:not(:last-child)::after {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  left: 40px;
+  height: 2px;
+  content: '';
+  background: var(--border);
+}
+.dk-step--done:not(:last-child)::after {
+  background: var(--ok);
+}
+.dk-step__dot {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: 50%;
+}
+.dk-step--active .dk-step__dot {
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-quiet);
+}
+.dk-step--done .dk-step__dot {
+  color: #fff;
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.dk-step--done.dk-step--danger .dk-step__dot {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.dk-step--done.dk-step--warn .dk-step__dot {
+  background: var(--warn);
+  border-color: var(--warn);
+}
+.dk-step__label {
+  display: grid;
+  padding-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heading);
+  background: var(--panel);
+  padding-right: 8px;
+  position: relative;
+  z-index: 1;
+}
+.dk-step__label small {
+  font-weight: 400;
+  color: var(--muted);
+}
+.dk-reason {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: 6px;
+}
+.dk-reason--danger {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
+.dk-risk {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dk-risk li {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.dk-risk li:first-child {
+  border-top: 0;
+}
+.dk-risk__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  color: var(--accent);
+  background: var(--accent-quiet);
+  border-radius: 8px;
+}
+.dk-risk__name {
+  display: grid;
+  min-width: 0;
+}
+.dk-risk__name small {
+  font-size: 12px;
+  color: var(--muted);
+}
+.dk-risk__when {
+  font-size: 12px;
+  color: var(--muted);
+}
+.dk-skeleton {
+  gap: 12px;
+}
+.dk-skeleton span {
+  height: 18px;
+  background: var(--elevated);
+  border-radius: 6px;
+}
+.dk-skeleton span:last-child {
+  width: 60%;
+}
+@media (max-width: 640px) {
+  .dk-chips {
+    margin-left: 0;
+  }
+  .dk-steps {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .dk-step:not(:last-child)::after {
+    display: none;
+  }
+  .dk-status .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  .dk-risk li {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+  }
+  .dk-risk__when {
+    display: none;
+  }
+}
+.dk-step-head {
+  margin-bottom: 12px;
+}
+.dk-step-head h2 {
+  margin: 0;
+}
+.dk-step-head p {
+  margin: 2px 0 0;
+}
