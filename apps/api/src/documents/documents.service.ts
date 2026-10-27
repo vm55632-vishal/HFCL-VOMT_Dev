@@ -6,7 +6,15 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { ALLOWED_MIME, detectFileType, newId, PERMISSIONS } from '@vop/shared';
+import {
+  ALLOWED_MIME,
+  detectFileType,
+  DOCUMENT_COMMENT_MAX,
+  documentSourceFor,
+  isDocumentSource,
+  newId,
+  PERMISSIONS,
+} from '@vop/shared';
 import type { AppConfig } from '@vop/config';
 import { APP_CONFIG } from '../config/config.module';
 import { isCaseOwner } from '../cases/case-ownership';
@@ -38,6 +46,8 @@ const META_SELECT = {
   status: true,
   version: true,
   expiryDate: true,
+  source: true,
+  comment: true,
   uploadedById: true,
   createdAt: true,
 };
@@ -77,8 +87,16 @@ export class DocumentsService {
     docType: string,
     file: UploadedFile,
     expiryDate?: string,
+    meta: { source?: string; comment?: string } = {},
   ) {
     await this.caseAndAuthz(actor, caseId);
+    if (meta.source && !isDocumentSource(meta.source)) {
+      throw new BadRequestException('Unknown upload source.');
+    }
+    const comment = meta.comment?.trim() || null;
+    if (comment && comment.length > DOCUMENT_COMMENT_MAX) {
+      throw new BadRequestException(`The comment can be up to ${DOCUMENT_COMMENT_MAX} characters.`);
+    }
 
     if (file.buffer.length > this.config.uploads.maxBytes) {
       throw new BadRequestException('File exceeds the maximum allowed size.');
@@ -130,6 +148,8 @@ export class DocumentsService {
         status: 'CLEAN',
         version: priorVersions + 1,
         expiryDate: expiryDate ? new Date(expiryDate) : null,
+        source: documentSourceFor(docType, meta.source),
+        comment,
         uploadedById: actor.id,
       },
       select: META_SELECT,
@@ -140,18 +160,39 @@ export class DocumentsService {
       entityType: 'Document',
       entityId: doc.id,
       actorId: actor.id,
-      detail: { caseId, docType, sha256, sizeBytes: file.buffer.length, version: doc.version },
+      detail: {
+        caseId,
+        docType,
+        sha256,
+        sizeBytes: file.buffer.length,
+        version: doc.version,
+        source: doc.source,
+      },
     });
     return doc;
   }
 
   async list(actor: AuthUser, caseId: string) {
     await this.caseAndAuthz(actor, caseId);
-    return this.prisma.document.findMany({
+    const docs = await this.prisma.document.findMany({
       where: { caseId },
       orderBy: { createdAt: 'desc' },
       select: META_SELECT,
     });
+    // Who uploaded each file (name only), and where from: older uploads get a source by type.
+    const ids = [...new Set(docs.map((d) => d.uploadedById))];
+    const users = ids.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const names = new Map(users.map((u) => [u.id, u.name]));
+    return docs.map((d) => ({
+      ...d,
+      source: documentSourceFor(d.docType, d.source),
+      uploadedByName: names.get(d.uploadedById) ?? null,
+    }));
   }
 
   /** Stream a clean document after re-checking authorization. The download is audited. */

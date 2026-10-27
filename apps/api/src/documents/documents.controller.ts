@@ -39,6 +39,8 @@ export class DocumentsController {
     @UploadedFile() file: Express.Multer.File | undefined,
     @Body('docType') docType: string,
     @Body('expiryDate') expiryDate?: string,
+    @Body('source') source?: string,
+    @Body('comment') comment?: string,
   ) {
     if (!file) throw new BadRequestException('No file provided.');
     if (!docType) throw new BadRequestException('docType is required.');
@@ -48,6 +50,7 @@ export class DocumentsController {
       docType,
       { buffer: file.buffer, originalname: file.originalname, mimetype: file.mimetype },
       expiryDate,
+      { source, comment },
     );
   }
 

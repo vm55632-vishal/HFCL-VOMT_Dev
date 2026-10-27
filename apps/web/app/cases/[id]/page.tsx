@@ -8,6 +8,7 @@ import { apiFetch, ApiError, API_BASE } from '../../../lib/api';
 import { SkeletonLines } from '../../../components/Skeleton';
 import ParallelReview from '../../../components/ParallelReview';
 import VendorDetailsModal from '../../../components/VendorDetailsModal';
+import CaseFiles, { type CaseFile } from '../../../components/CaseFiles';
 import DecisionDialog from '../../../components/DecisionDialog';
 import {
   Card,
@@ -40,17 +41,7 @@ interface Activity {
   toStage: string | null;
   note: string | null;
 }
-interface Doc {
-  id: string;
-  docType: string;
-  filename: string;
-  fileType: string;
-  sizeBytes: number;
-  sha256: string;
-  status: string;
-  version: number;
-  createdAt: string;
-}
+type Doc = CaseFile;
 interface CaseDetail {
   id: string;
   ref: string;
@@ -134,7 +125,6 @@ export default function CaseDetail() {
   const router = useRouter();
   const [c, setC] = useState<CaseDetail | null>(null);
   const [docs, setDocs] = useState<Doc[]>([]);
-  const [docType, setDocType] = useState('pan_card');
   const [msg, setMsg] = useState<string | null>(null);
   const [perms, setPerms] = useState<string[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
@@ -181,12 +171,13 @@ export default function CaseDetail() {
     }
   }, [id]);
 
-  async function uploadDoc(file: File, type: string = docType) {
+  async function uploadDoc(file: File, type: string, source: string) {
     setMsg(null);
     setUploading(true);
     const form = new FormData();
     form.append('file', file);
     form.append('docType', type);
+    form.append('source', source);
     const res = await fetch(`${API_BASE}/cases/${id}/documents`, {
       method: 'POST',
       credentials: 'include',
@@ -616,7 +607,7 @@ export default function CaseDetail() {
                   busy={uploading}
                   invalid={fcuTried && fcuReports.length === 0}
                   hint="PDF, JPG or PNG · checked by content and scanned for malware"
-                  onFile={(file) => void uploadDoc(file, 'fcu_dd_report')}
+                  onFile={(file) => void uploadDoc(file, 'fcu_dd_report', 'fcu_review')}
                 />
                 {fcuTried && fcuReports.length === 0 && (
                   <p className="fcu-q__err" role="alert" style={{ marginTop: 8 }}>
@@ -979,82 +970,12 @@ export default function CaseDetail() {
         aria-labelledby="casetab-files"
         hidden={tab !== 'files'}
       >
-        <section className="card">
-          <h2>Documents ({docs.length})</h2>
-          <div className="req__actions">
-            <select value={docType} onChange={(e) => setDocType(e.target.value)}>
-              {[
-                'pan_card',
-                'gst_certificate',
-                'cancelled_cheque',
-                'insurance',
-                'tax_residency_certificate',
-                'related_party_declaration',
-                'other',
-              ].map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-            <input
-              type="file"
-              accept=".pdf,.jpg,.jpeg,.png"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void uploadDoc(file);
-                e.currentTarget.value = '';
-              }}
-            />
-          </div>
-          <p className="muted tiny">PDF/JPG/PNG only · validated by content and malware-scanned.</p>
-          <div className="scroll-area">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>Type</th>
-                  <th>File</th>
-                  <th>Size</th>
-                  <th>SHA-256</th>
-                  <th>Status</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {docs.map((d) => (
-                  <tr key={d.id}>
-                    <td>
-                      {d.docType} <span className="muted tiny">v{d.version}</span>
-                    </td>
-                    <td>{d.filename}</td>
-                    <td className="muted">{(d.sizeBytes / 1024).toFixed(0)} KB</td>
-                    <td className="muted tiny">{d.sha256.slice(0, 12)}…</td>
-                    <td>
-                      <span className={d.status === 'CLEAN' ? 'pill pill--ok' : 'pill'}>
-                        {d.status}
-                      </span>
-                    </td>
-                    <td>
-                      <a
-                        className="btn btn--sm btn--ghost"
-                        href={`${API_BASE}/cases/${id}/documents/${d.id}/download`}
-                      >
-                        Download
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-                {docs.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="muted">
-                      No documents.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <CaseFiles
+          caseId={c.id}
+          files={docs}
+          canUpload={perms.includes('document:upload')}
+          onUploaded={load}
+        />
       </div>
 
       <div

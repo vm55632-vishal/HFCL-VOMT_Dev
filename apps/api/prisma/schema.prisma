@@ -523,6 +523,10 @@ model Document {
   scanSignature String?        @map("scan_signature")
   version       Int            @default(1)
   expiryDate    DateTime?      @map("expiry_date") @db.Date
+  /// Where on the platform it was uploaded from (DocumentSource); null on older uploads.
+  source        String?
+  /// The uploader's note about the file (plain text, length-capped).
+  comment       String?
   uploadedById  String         @map("uploaded_by_id") @db.Char(26)
   createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
 

@@ -1118,6 +1118,7 @@ function NewCaseInner() {
       const form = new FormData();
       form.append('file', file);
       form.append('docType', photoDocType);
+      form.append('source', 'vendor_form');
       await apiUpload(`/cases/${id}/documents`, form);
       setPhoto({ name: file.name, busy: false });
     } catch (err) {
