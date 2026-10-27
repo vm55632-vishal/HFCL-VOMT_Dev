@@ -21,7 +21,7 @@ interface KycCheck {
 }
 interface KycSummary {
   case: { id: string; ref: string; legalName: string; stage: string };
-  signatory: { name: string; mobile: string; email: string };
+  signatory: { name: string; mobile: string; email: string; pan: string };
   overall: 'not_initiated' | 'in_progress' | 'passed' | 'failed';
   ready: boolean;
   canInitiate: boolean;
@@ -202,6 +202,10 @@ export default function KycPanel({
                 <div>
                   <dt>Mobile</dt>
                   <dd>{signatory.mobile ? `+91 ${signatory.mobile}` : '—'}</dd>
+                </div>
+                <div>
+                  <dt>PAN</dt>
+                  <dd>{signatory.pan || '—'}</dd>
                 </div>
                 <div>
                   <dt>Vendor Name</dt>

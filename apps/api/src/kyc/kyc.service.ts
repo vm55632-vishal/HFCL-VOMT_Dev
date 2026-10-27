@@ -11,6 +11,7 @@ import {
   KYC_CHECKS,
   KYC_CHECK_META,
   PERMISSIONS,
+  maskPan,
   newId,
   type KycCheckKey,
   type KycStatus,
@@ -202,8 +203,10 @@ export class KycService {
     }
   }
 
-  private view(actor: AuthUser, c: CaseForKyc, rows: CheckRow[]) {
+  private async view(actor: AuthUser, c: CaseForKyc, rows: CheckRow[]) {
     const g = c.general;
+    // The signatory's PAN: in full for the case's own proposer (who entered it), masked for others.
+    const pan = g?.signatoryPanEnc ? await this.crypto.decryptFromString(g.signatoryPanEnc) : '';
     const started = rows.length > 0;
     const overall: 'not_initiated' | 'in_progress' | 'passed' | 'failed' = !started
       ? 'not_initiated'
@@ -219,6 +222,7 @@ export class KycService {
         name: g?.signatoryName ?? '',
         mobile: g?.signatoryMobile ?? '',
         email: g?.signatoryEmail ?? '',
+        pan: isCaseOwner(c, actor.id) ? pan : maskPan(pan),
       },
       overall,
       ready,
