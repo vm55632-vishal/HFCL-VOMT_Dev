@@ -16,7 +16,16 @@ import type { Response } from 'express';
 import { PERMISSIONS } from '@vop/shared';
 import { CurrentUser, type AuthUser } from '../auth/auth-user';
 import { RequirePermissions } from '../authz/permissions.decorator';
+import { z } from 'zod';
+import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { DocumentsService } from './documents.service';
+
+const removeSchema = z.object({
+  ids: z
+    .array(z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/, 'Invalid file id.'))
+    .min(1)
+    .max(100),
+});
 
 // Hard cap for the multipart parser; the configurable business limit is enforced in the service.
 const HARD_LIMIT_BYTES = 25 * 1024 * 1024;
@@ -58,6 +67,17 @@ export class DocumentsController {
   @ApiOperation({ summary: 'List documents on a case' })
   list(@CurrentUser() actor: AuthUser, @Param('caseId') caseId: string) {
     return this.documents.list(actor, caseId);
+  }
+
+  @Post('remove')
+  @RequirePermissions(PERMISSIONS.DocumentUpload)
+  @ApiOperation({ summary: 'Remove files you uploaded from an open case (audited)' })
+  remove(
+    @CurrentUser() actor: AuthUser,
+    @Param('caseId') caseId: string,
+    @Body(new ZodValidationPipe(removeSchema)) body: z.infer<typeof removeSchema>,
+  ) {
+    return this.documents.remove(actor, caseId, body.ids);
   }
 
   @Get(':docId/download')

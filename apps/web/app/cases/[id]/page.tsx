@@ -974,7 +974,7 @@ export default function CaseDetail() {
           caseId={c.id}
           files={docs}
           canUpload={perms.includes('document:upload')}
-          onUploaded={load}
+          onChanged={load}
         />
       </div>
 

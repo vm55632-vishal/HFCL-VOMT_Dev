@@ -4993,3 +4993,72 @@ div.kyc__row {
     width: 100%;
   }
 }
+
+/* Case Files: selecting files to download or remove together. */
+.cf-selcell {
+  width: 1%;
+  padding-right: 0 !important;
+}
+.cf-selcell input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.cf-table tbody tr.is-selected td {
+  background: var(--accent-quiet);
+}
+.cf-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px 12px;
+  background: var(--accent-quiet);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+.cf-bulk.is-danger {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+.cf-bulk__text {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+.cf-bulk.is-danger .cf-bulk__text {
+  color: var(--danger);
+  font-weight: 600;
+}
+.cf-bulk__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+}
+.cf-bulk__remove:not(:disabled) {
+  color: var(--danger);
+}
+.cf-bulk__btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.cf-link {
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.cf-btn-danger {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}

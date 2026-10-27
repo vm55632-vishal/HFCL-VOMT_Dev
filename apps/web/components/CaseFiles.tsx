@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CASE_FILE_TYPES,
   DOCUMENT_COMMENT_MAX,
@@ -8,7 +8,7 @@ import {
   docTypeLabel,
   isDocumentSource,
 } from '@vop/shared';
-import { API_BASE, ApiError, apiUpload } from '../lib/api';
+import { API_BASE, ApiError, apiFetch, apiUpload } from '../lib/api';
 import { Icon } from './icons';
 import { initials } from './DetailParts';
 
@@ -25,6 +25,8 @@ export interface CaseFile {
   source?: string | null;
   comment?: string | null;
   uploadedByName?: string | null;
+  /** The server's answer: this user uploaded it and the case is still open. */
+  canRemove?: boolean;
 }
 
 const ACCEPT = '.pdf,.jpg,.jpeg,.png';
@@ -48,6 +50,9 @@ const size = (n: number) =>
     ? `${Math.max(1, Math.round(n / 1024))} KB`
     : `${(n / 1024 / 1024).toFixed(1)} MB`;
 
+const downloadUrl = (caseId: string, id: string) =>
+  `${API_BASE}/cases/${caseId}/documents/${id}/download`;
+
 const when = (iso: string) =>
   new Date(iso).toLocaleString('en-IN', {
     day: '2-digit',
@@ -60,21 +65,36 @@ const when = (iso: string) =>
 /**
  * The case's Files tab: every document on the case with where it was uploaded from, who uploaded
  * it and when, and their comment; plus uploading straight from here (type + optional comment).
- * Files are validated by content and malware-scanned on the server.
+ * Files are validated by content and malware-scanned on the server. One or more files can be
+ * selected to download together, or to remove (only your own uploads, while the case is open).
  */
 export default function CaseFiles({
   caseId,
   files,
   canUpload,
-  onUploaded,
+  onChanged,
 }: {
   caseId: string;
   files: CaseFile[];
   canUpload: boolean;
-  onUploaded: () => Promise<void> | void;
+  /** Reload the files after an upload or a removal. */
+  onChanged: () => Promise<void> | void;
 }) {
   const [query, setQuery] = useState('');
   const [source, setSource] = useState('all');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+
+  // Forget selected files that are gone (removed, or reloaded away).
+  useEffect(() => {
+    setSelected((cur) => {
+      const ids = new Set(files.map((f) => f.id));
+      const next = new Set([...cur].filter((id) => ids.has(id)));
+      return next.size === cur.size ? cur : next;
+    });
+  }, [files]);
 
   const sources = useMemo(() => [...new Set(files.map((f) => f.source ?? 'case_files'))], [files]);
   const shown = useMemo(() => {
@@ -90,9 +110,75 @@ export default function CaseFiles({
     );
   }, [files, query, source]);
 
+  const picked = files.filter((f) => selected.has(f.id));
+  const allShown = shown.length > 0 && shown.every((f) => selected.has(f.id));
+  const someShown = shown.some((f) => selected.has(f.id));
+  const removable = picked.length > 0 && picked.every((f) => f.canRemove);
+  const downloadable = picked.filter((f) => f.status === 'CLEAN');
+
+  function toggle(id: string) {
+    setConfirmRemove(false);
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleAll() {
+    setConfirmRemove(false);
+    setSelected((cur) => {
+      const next = new Set(cur);
+      for (const f of shown) {
+        if (allShown) next.delete(f.id);
+        else next.add(f.id);
+      }
+      return next;
+    });
+  }
+  function clear() {
+    setSelected(new Set());
+    setConfirmRemove(false);
+  }
+
+  // One download per file (each is authorised and audited on the server), a moment apart so the
+  // browser does not drop any.
+  async function downloadSelected() {
+    setNote(null);
+    for (const [i, f] of downloadable.entries()) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 400));
+      const a = document.createElement('a');
+      a.href = downloadUrl(caseId, f.id);
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+  }
+
+  async function removeSelected() {
+    if (!removable || busy) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const res = await apiFetch<{ removed: number }>(`/cases/${caseId}/documents/remove`, {
+        method: 'POST',
+        body: JSON.stringify({ ids: picked.map((f) => f.id) }),
+      });
+      setNote({ tone: 'ok', text: `${res.removed} file${res.removed === 1 ? '' : 's'} removed.` });
+      clear();
+      await onChanged();
+    } catch (err) {
+      setNote({ tone: 'error', text: err instanceof Error ? err.message : 'Could not remove.' });
+    } finally {
+      setBusy(false);
+      setConfirmRemove(false);
+    }
+  }
+
   return (
     <div className="cf">
-      {canUpload && <Uploader caseId={caseId} onUploaded={onUploaded} />}
+      {canUpload && <Uploader caseId={caseId} onUploaded={onChanged} />}
 
       <section className="cf-card">
         <div className="cf-head">
@@ -136,6 +222,79 @@ export default function CaseFiles({
           </div>
         )}
 
+        {picked.length > 0 && (
+          <div
+            className={`cf-bulk${confirmRemove ? ' is-danger' : ''}`}
+            role="region"
+            aria-label="Selected files"
+          >
+            {confirmRemove ? (
+              <>
+                <span className="cf-bulk__text">
+                  <Icon name="alert" size={16} />
+                  Remove {picked.length} file{picked.length === 1 ? '' : 's'}? This cannot be
+                  undone.
+                </span>
+                <button
+                  type="button"
+                  className="btn btn--sm btn--ghost"
+                  onClick={() => setConfirmRemove(false)}
+                  disabled={busy}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--sm cf-btn-danger"
+                  onClick={() => void removeSelected()}
+                  disabled={busy}
+                >
+                  {busy ? 'Removing…' : 'Remove'}
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="cf-bulk__text">
+                  <strong>{picked.length}</strong> selected
+                  <button type="button" className="cf-link" onClick={clear}>
+                    Clear
+                  </button>
+                </span>
+                <button
+                  type="button"
+                  className="btn btn--sm btn--ghost cf-bulk__btn"
+                  onClick={() => void downloadSelected()}
+                  disabled={downloadable.length === 0}
+                >
+                  <Icon name="download" size={16} /> Download
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--sm btn--ghost cf-bulk__btn cf-bulk__remove"
+                  onClick={() => setConfirmRemove(true)}
+                  disabled={!removable}
+                  title={
+                    removable
+                      ? undefined
+                      : 'You can only remove files you uploaded, while the case is open.'
+                  }
+                >
+                  <Icon name="close" size={16} /> Remove
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {note && (
+          <p
+            className={`cf-note cf-note--${note.tone}`}
+            role={note.tone === 'error' ? 'alert' : 'status'}
+          >
+            <Icon name={note.tone === 'ok' ? 'check' : 'alert'} size={16} />
+            {note.text}
+          </p>
+        )}
+
         {files.length === 0 ? (
           <div className="cf-empty">
             <span aria-hidden="true">
@@ -155,6 +314,17 @@ export default function CaseFiles({
             <table className="cf-table">
               <thead>
                 <tr>
+                  <th className="cf-selcell">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all files"
+                      checked={allShown}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someShown && !allShown;
+                      }}
+                      onChange={toggleAll}
+                    />
+                  </th>
                   <th>File</th>
                   <th>Type</th>
                   <th>Uploaded from</th>
@@ -169,7 +339,13 @@ export default function CaseFiles({
               </thead>
               <tbody>
                 {shown.map((f) => (
-                  <FileRow key={f.id} caseId={caseId} f={f} />
+                  <FileRow
+                    key={f.id}
+                    caseId={caseId}
+                    f={f}
+                    selected={selected.has(f.id)}
+                    onToggle={() => toggle(f.id)}
+                  />
                 ))}
               </tbody>
             </table>
@@ -180,11 +356,29 @@ export default function CaseFiles({
   );
 }
 
-function FileRow({ caseId, f }: { caseId: string; f: CaseFile }) {
+function FileRow({
+  caseId,
+  f,
+  selected,
+  onToggle,
+}: {
+  caseId: string;
+  f: CaseFile;
+  selected: boolean;
+  onToggle: () => void;
+}) {
   const clean = f.status === 'CLEAN';
   const kind = f.fileType === 'pdf' ? 'PDF' : f.fileType.toUpperCase();
   return (
-    <tr>
+    <tr className={selected ? 'is-selected' : undefined}>
+      <td className="cf-selcell">
+        <input
+          type="checkbox"
+          aria-label={`Select ${f.filename}`}
+          checked={selected}
+          onChange={onToggle}
+        />
+      </td>
       <td>
         <div className="cf-filecell">
           <span
@@ -233,7 +427,7 @@ function FileRow({ caseId, f }: { caseId: string; f: CaseFile }) {
         {clean && (
           <a
             className="cf-dl"
-            href={`${API_BASE}/cases/${caseId}/documents/${f.id}/download`}
+            href={downloadUrl(caseId, f.id)}
             aria-label={`Download ${f.filename}`}
             title="Download"
           >

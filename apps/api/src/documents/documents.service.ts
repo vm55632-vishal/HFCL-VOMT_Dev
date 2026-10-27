@@ -29,6 +29,9 @@ import {
 import { objectKey } from '../providers/storage.adapters';
 import type { AuthUser } from '../auth/auth-user';
 
+/** Files on a finished case are part of its record and cannot be removed. */
+const CLOSED_STAGES = ['approved', 'rejected', 'cancelled'];
+
 export interface UploadedFile {
   buffer: Buffer;
   originalname: string;
@@ -62,15 +65,24 @@ export class DocumentsService {
     private readonly audit: AuditService,
   ) {}
 
-  private async caseAndAuthz(actor: AuthUser, caseId: string): Promise<void> {
+  private async caseAndAuthz(actor: AuthUser, caseId: string): Promise<{ stage: string }> {
     const c = await this.prisma.case.findUnique({
       where: { id: caseId },
-      select: { createdById: true, onBehalfOfId: true, assigneeId: true },
+      select: { createdById: true, onBehalfOfId: true, assigneeId: true, stage: true },
     });
     if (!c) throw new NotFoundException('Case not found.');
-    if (actor.permissions.has(PERMISSIONS.VendorReadAll)) return;
-    if (isCaseOwner(c, actor.id) || c.assigneeId === actor.id) return;
+    if (actor.permissions.has(PERMISSIONS.VendorReadAll)) return c;
+    if (isCaseOwner(c, actor.id) || c.assigneeId === actor.id) return c;
     throw new ForbiddenException('Not authorized for this case.');
+  }
+
+  /** A file can be removed only by the person who uploaded it, while the case is still open. */
+  private canRemove(actor: AuthUser, stage: string, uploadedById: string): boolean {
+    return (
+      actor.permissions.has(PERMISSIONS.DocumentUpload) &&
+      !CLOSED_STAGES.includes(stage) &&
+      uploadedById === actor.id
+    );
   }
 
   /** Display-only filename: strip any path and control chars, cap length. Never used as a key. */
@@ -173,7 +185,7 @@ export class DocumentsService {
   }
 
   async list(actor: AuthUser, caseId: string) {
-    await this.caseAndAuthz(actor, caseId);
+    const { stage } = await this.caseAndAuthz(actor, caseId);
     const docs = await this.prisma.document.findMany({
       where: { caseId },
       orderBy: { createdAt: 'desc' },
@@ -192,7 +204,42 @@ export class DocumentsService {
       ...d,
       source: documentSourceFor(d.docType, d.source),
       uploadedByName: names.get(d.uploadedById) ?? null,
+      canRemove: this.canRemove(actor, stage, d.uploadedById),
     }));
+  }
+
+  /**
+   * Remove files from a case: all of them or none. Each must be on this case and removable by the
+   * actor (their own upload, case still open). The rows go first, then the stored bytes; every
+   * removal is audited with the file's hash so the record of what existed survives.
+   */
+  async remove(actor: AuthUser, caseId: string, ids: string[]) {
+    const { stage } = await this.caseAndAuthz(actor, caseId);
+    const docs = await this.prisma.document.findMany({
+      where: { id: { in: ids }, caseId },
+      select: { id: true, docType: true, sha256: true, storageKey: true, uploadedById: true },
+    });
+    if (docs.length !== new Set(ids).size) throw new NotFoundException('File not found.');
+    if (CLOSED_STAGES.includes(stage)) {
+      throw new ForbiddenException('Files on a finished case cannot be removed.');
+    }
+    if (docs.some((d) => !this.canRemove(actor, stage, d.uploadedById))) {
+      throw new ForbiddenException('You can only remove files you uploaded.');
+    }
+    await this.prisma.document.deleteMany({ where: { id: { in: docs.map((d) => d.id) }, caseId } });
+    for (const d of docs) {
+      await this.audit.append({
+        action: 'document.remove',
+        entityType: 'Document',
+        entityId: d.id,
+        actorId: actor.id,
+        detail: { caseId, docType: d.docType, sha256: d.sha256 },
+      });
+      // The row is gone, so the file can no longer be reached; a storage failure only leaves
+      // an orphaned object behind.
+      await this.storage.remove(d.storageKey).catch(() => undefined);
+    }
+    return { removed: docs.length };
   }
 
   /** Stream a clean document after re-checking authorization. The download is audited. */
