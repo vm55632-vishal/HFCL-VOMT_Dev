@@ -20,6 +20,7 @@ import {
   constitutionFromPan,
   isConstitution,
 } from '@vop/shared';
+import KycPanel from '../../../components/KycPanel';
 import ManagementPeople, {
   EMPTY_PERSON,
   type PersonRow,
@@ -294,6 +295,7 @@ const STEPS = [
   { title: 'Team structure' },
   { title: 'Questionnaire' },
   { title: 'Management & references' },
+  { title: 'Digi KYC' },
 ];
 
 // InfoSec questionnaire — any "yes" routes the case to InfoSec review.
@@ -1176,6 +1178,12 @@ function NewCaseInner() {
 
   // --- Multi-step form ---
   const [step, setStep] = useState(0);
+  // Digi KYC (last step) runs on the saved case: the draft, or the case being amended.
+  const kycCaseId = editId || draftId;
+  useEffect(() => {
+    if (step === 4 && !kycCaseId && kind !== 'resubmit') void flushDraft();
+  }, [step, kycCaseId, kind, flushDraft]);
+
   // Remember the page per draft, so reopening a draft returns to it.
   useEffect(() => {
     if (!draftId) return;
@@ -2578,6 +2586,45 @@ function NewCaseInner() {
 
               <div className="req__actions">
                 <button className="btn btn--ghost" type="button" onClick={() => goTo(2)}>
+                  Back
+                </button>
+                <button className="btn" type="button" onClick={() => goTo(4)}>
+                  Next
+                </button>
+                {draftControls}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div data-step="4" hidden={step !== 4}>
+          {panVerified && step === 4 && (
+            <>
+              <section className="card">
+                <h2>Digi KYC</h2>
+                <p className="section-intro">
+                  Run Digi KYC and the risk checks on the authorised signatory before raising the
+                  case. The checks run one after another; you can raise the case while they run.
+                </p>
+                {kycCaseId ? (
+                  <KycPanel
+                    caseId={kycCaseId}
+                    embedded
+                    beforeInitiate={
+                      kind === 'resubmit'
+                        ? undefined
+                        : async () => {
+                            await flushDraft();
+                          }
+                    }
+                  />
+                ) : (
+                  <p className="muted">{draftError ?? 'Saving the draft so the checks can run…'}</p>
+                )}
+              </section>
+
+              <div className="req__actions">
+                <button className="btn btn--ghost" type="button" onClick={() => goTo(3)}>
                   Back
                 </button>
                 <button className="btn" type="submit" disabled={busy}>

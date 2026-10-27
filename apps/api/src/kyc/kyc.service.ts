@@ -223,10 +223,7 @@ export class KycService {
       overall,
       ready,
       canInitiate:
-        overall === 'not_initiated' &&
-        ready &&
-        c.stage !== 'draft' &&
-        actor.permissions.has(PERMISSIONS.KycInitiate),
+        overall === 'not_initiated' && ready && actor.permissions.has(PERMISSIONS.KycInitiate),
       checks: KYC_CHECKS.map((key, i) => {
         const row = rows.find((r) => r.checkKey === key);
         // Before the run, Digi KYC shows "Not initiated" and the rest "Pending", as the run starts there.
@@ -255,10 +252,9 @@ export class KycService {
   }
 
   async initiate(actor: AuthUser, id: string) {
+    // A draft can be checked too: the intake form's last step runs Digi KYC before the case is
+    // raised (loadCase only lets the draft's own proposer see it).
     const c = await this.loadCase(actor, id);
-    if (c.stage === 'draft') {
-      throw new BadRequestException('Raise the case before running KYC checks.');
-    }
     await this.subjectFor(c); // signatory name + PAN must be present
     try {
       await this.prisma.caseKycCheck.createMany({
