@@ -4706,7 +4706,18 @@ div.kyc__row {
   box-shadow: none;
 }
 .cf-tools {
-  flex: 0 1 280px;
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 14px;
+}
+.cf-selcount {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cf-selcount strong {
+  color: var(--heading);
 }
 .cf-filters {
   display: flex;

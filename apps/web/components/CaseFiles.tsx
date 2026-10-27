@@ -212,19 +212,14 @@ export default function CaseFiles({
                 >
                   <Icon name="close" size={16} /> Remove
                 </button>
-                {picked.length > 0 && (
-                  <span className="cf-bulk__text">
-                    <strong>{picked.length}</strong> selected
-                    <button type="button" className="cf-link" onClick={clear}>
-                      Clear
-                    </button>
-                  </span>
-                )}
               </div>
             )}
           </div>
           {files.length > 0 && (
             <div className="cf-tools">
+              <span className="cf-selcount" aria-live="polite">
+                <strong>{picked.length}</strong> of {files.length} selected
+              </span>
               <label className="cf-search">
                 <Icon name="search" size={16} />
                 <input
