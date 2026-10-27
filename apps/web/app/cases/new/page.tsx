@@ -1053,9 +1053,9 @@ function NewCaseInner() {
       return { ...prev, constitution: value, partners };
     });
   }
-  // A sole proprietor is the PAN holder: fill the proprietor's name, gender, date of birth (when
-  // the registry returns it) and PAN from the verified PAN. Only empty fields are filled, so
-  // anything the proposer typed or a restored draft holds is kept.
+  // A sole proprietor is the PAN holder: fill the proprietor's name, father's name, gender, date of
+  // birth and PAN from the verified PAN. A value the registry doesn't return stays blank, and only
+  // empty fields are filled, so anything the proposer typed or a restored draft holds is kept.
   const panFields = panChk.result?.verified ? panChk.result.fields : undefined;
   const panName = panFields?.name ?? panChk.result?.name;
   useEffect(() => {
@@ -1063,6 +1063,7 @@ function NewCaseInner() {
     const pan = f.pan.includes('•') ? '' : f.pan.trim().toUpperCase();
     const fromPan: Partial<PartnerRow> = {
       name: panName ?? '',
+      fatherName: panFields?.fatherName?.trim() ?? '',
       gender: panGender(panFields?.gender),
       dob: panDob(panFields?.dob),
       pan,
@@ -1076,7 +1077,15 @@ function NewCaseInner() {
       if (Object.keys(patch).length === 0) return prev;
       return { ...prev, partners: [{ ...row, ...patch }, ...prev.partners.slice(1)] };
     });
-  }, [mgmtRole, panChk.result, panName, panFields?.gender, panFields?.dob, f.pan]);
+  }, [
+    mgmtRole,
+    panChk.result,
+    panName,
+    panFields?.fatherName,
+    panFields?.gender,
+    panFields?.dob,
+    f.pan,
+  ]);
 
   // The photograph (Karta of an HUF) is uploaded to the draft and malware-scanned by the API.
   const [photo, setPhoto] = useState<{ name?: string; busy: boolean; error?: string }>({
