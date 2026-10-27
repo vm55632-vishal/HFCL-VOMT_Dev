@@ -279,13 +279,13 @@ const initial = {
   litigation: 'None',
   insurance: 'Adequate',
   certifications: 'None',
-  // information security questionnaire ('' = unanswered, 'yes' | 'no')
-  isecItHardware: '',
-  isecItSoftware: '',
-  isecAccessSystem: '',
-  isecAccessNetwork: '',
-  isecAccessApps: '',
-  isecAccessPii: '',
+  // information security questionnaire ('yes' | 'no'); No unless the proposer says Yes
+  isecItHardware: 'no',
+  isecItSoftware: 'no',
+  isecAccessSystem: 'no',
+  isecAccessNetwork: 'no',
+  isecAccessApps: 'no',
+  isecAccessPii: 'no',
 };
 
 // The form is split into steps so no page is a long scroll. Add a step here (and a matching
@@ -380,8 +380,8 @@ function NewCaseInner() {
       .then((c) => {
         const str = (v: unknown) => (v == null ? '' : String(v));
         const isDraft = c.stage === 'draft';
-        // A draft cannot tell "answered No" from "not answered yet", so false stays blank there.
-        const bs = (b: boolean) => (b ? 'yes' : isDraft ? '' : 'no');
+        // The InfoSec answers default to No, so a stored false is a No (drafts included).
+        const bs = (b: boolean) => (b ? 'yes' : 'no');
         const changed = Array.isArray(c.teamOverriddenFields)
           ? (c.teamOverriddenFields as string[])
           : [];
