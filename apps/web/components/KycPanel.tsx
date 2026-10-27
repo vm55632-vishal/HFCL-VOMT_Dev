@@ -180,7 +180,7 @@ export default function KycPanel({
         </p>
       )}
 
-      <div className="kyc__layout">
+      <div>
         <div className="kyc__main">
           <section className="card kyc__card">
             <h2 className="kyc__h2">
@@ -311,38 +311,6 @@ export default function KycPanel({
             </div>
           </aside>
         </div>
-
-        <aside className="kyc__side">
-          <section className="card kyc__card">
-            <h2 className="kyc__h2">What happens next?</h2>
-            <ol className="kyc__steps">
-              <li>Click on &lsquo;Initiate Digi KYC&rsquo;.</li>
-              <li>Digi KYC is initiated and the verification workflow starts.</li>
-              <li>All checks run one after another and update their status.</li>
-              <li>Review the results and proceed with the next stage of onboarding.</li>
-            </ol>
-          </section>
-          <section className="card kyc__card">
-            <h2 className="kyc__h2">Check Details</h2>
-            <ul className="kyc__details">
-              {data.checks.map((k) => (
-                <li key={k.key}>
-                  <span
-                    className={`kyc__ico kyc__ico--${CHECK_TONE[k.key] ?? 'blue'}`}
-                    aria-hidden="true"
-                  >
-                    <Icon name={CHECK_ICON[k.key] ?? 'shield'} size={16} />
-                  </span>
-                  <div>
-                    <strong>{k.label}</strong>
-                    <small>{k.scope}</small>
-                    <small>Typical turnaround: {k.turnaround}</small>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        </aside>
       </div>
 
       {confirming && (
