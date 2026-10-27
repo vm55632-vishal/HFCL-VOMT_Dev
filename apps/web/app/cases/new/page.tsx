@@ -1625,40 +1625,27 @@ function NewCaseInner() {
                 </label>
               )}
 
-              {panVerified && (
+              {/* With a GST registration the type comes from the GST details below; only a vendor
+                  without one (or whose GST lookup failed) has it selected here. */}
+              {constitutionEditable && (
                 <label className="span2">
                   Type of constitution
-                  {constitutionEditable ? (
-                    <select
-                      value={f.constitution}
-                      required
-                      onChange={(e) => setConstitution(e.target.value)}
-                    >
-                      <option value="">Select</option>
-                      {CONSTITUTIONS.map((c) => (
-                        <option key={c} value={c}>
-                          {CONSTITUTION_LABELS[c]}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      readOnly
-                      value={
-                        isConstitution(f.constitution) ? CONSTITUTION_LABELS[f.constitution] : ''
-                      }
-                      placeholder="Filled in from the GST details"
-                    />
-                  )}
+                  <select
+                    value={f.constitution}
+                    required
+                    onChange={(e) => setConstitution(e.target.value)}
+                  >
+                    <option value="">Select</option>
+                    {CONSTITUTIONS.map((c) => (
+                      <option key={c} value={c}>
+                        {CONSTITUTION_LABELS[c]}
+                      </option>
+                    ))}
+                  </select>
                   <span className="field-hint">
-                    {gstConstitution
-                      ? `From the GST registration ("${gstConstitution}").`
-                      : !constitutionEditable
-                        ? 'Fetch the GST details to fill this in.'
-                        : panSuggestion && f.constitution === panSuggestion.value
-                          ? (panSuggestion.note ?? 'Selected from the PAN.') +
-                            ' Change it if needed.'
-                          : "Select the vendor's type of constitution."}
+                    {panSuggestion && f.constitution === panSuggestion.value
+                      ? (panSuggestion.note ?? 'Selected from the PAN.') + ' Change it if needed.'
+                      : "Select the vendor's type of constitution."}
                   </span>
                 </label>
               )}
